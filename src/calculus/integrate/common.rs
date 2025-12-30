@@ -1,4 +1,5 @@
 use crate::expr::{Expr, Rational};
+use num_traits::Zero;
 
 #[derive(Clone, Debug)]
 enum LinearTerm {
@@ -39,13 +40,12 @@ pub fn linear_parts(expr: &Expr) -> Option<(Rational, Rational, String)> {
 
 /// Return the coefficient k in a linear term k*var (or var) if the expression is linear in `var`.
 pub fn coeff_of_var(expr: &Expr, var: &str) -> Option<Rational> {
-    match expr {
-        Expr::Mul(a, b) => {
-            const_var(a, b).and_then(|(coef, v)| if v == var { Some(coef) } else { None })
+    if let Some((coef, _, v)) = linear_parts(expr) {
+        if v == var && !coef.is_zero() {
+            return Some(coef);
         }
-        Expr::Variable(v) if v == var => Some(Rational::from_integer(1.into())),
-        _ => None,
     }
+    None
 }
 
 fn as_linear_term(expr: &Expr) -> Option<LinearTerm> {

@@ -93,6 +93,26 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     let mut attempts = Vec::new();
     let mut kind = classify_integrand(expr);
 
+    // If the chosen variable does not occur, treat the expression as a constant.
+    if !contains_var(expr, var) {
+        let result = simplify(Expr::Mul(
+            expr.clone().boxed(),
+            Expr::Variable(var.to_string()).boxed(),
+        ));
+        attempts.push(IntegrationAttempt {
+            strategy: Strategy::Direct,
+            status: AttemptStatus::Succeeded,
+        });
+        return IntegrationResult::Integrated {
+            result,
+            report: IntegrandReport {
+                kind,
+                reason: None,
+                attempts,
+            },
+        };
+    }
+
     if let Some(non_elem) = detect_non_elementary(expr) {
         kind = IntegrandKind::NonElementary(non_elem.clone());
         let report = IntegrandReport {
@@ -236,6 +256,13 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
 }
 
 fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
+    if !contains_var(expr, var) {
+        let with_var = Expr::Mul(
+            expr.clone().boxed(),
+            Expr::Variable(var.to_string()).boxed(),
+        );
+        return Some(with_var);
+    }
     match expr {
         Expr::Add(a, b) => Some(Expr::Add(
             integrate_direct(a, var)?.boxed(),
@@ -522,5 +549,21 @@ fn default_reason(kind: &IntegrandKind) -> ReasonCode {
         IntegrandKind::Trig => ReasonCode::NonPolynomialTrig,
         IntegrandKind::NonElementary(ne) => ReasonCode::NonElementary(ne.clone()),
         _ => ReasonCode::UnknownStructure,
+    }
+}
+
+fn contains_var(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Variable(v) => v == var,
+        Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Pow(a, b) => {
+            contains_var(a, var) || contains_var(b, var)
+        }
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Exp(inner)
+        | Expr::Log(inner) => contains_var(inner, var),
+        Expr::Constant(_) => false,
     }
 }

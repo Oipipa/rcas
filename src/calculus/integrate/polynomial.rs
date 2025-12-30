@@ -57,21 +57,39 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
             _ => None,
         },
         Expr::Pow(base, exp) => {
-            if let (Expr::Variable(name), Expr::Constant(n)) = (&**base, &**exp) {
-                if name == var && n.is_integer() {
-                    let k: BigInt = n.to_integer() + 1;
-                    return Some(Expr::Div(
-                        Expr::Pow(
-                            var_expr.clone().boxed(),
-                            Expr::Constant(Rational::from_integer(k.clone())).boxed(),
-                        )
-                        .boxed(),
-                        Expr::Constant(Rational::from_integer(k)).boxed(),
-                    ));
+            if let Expr::Variable(name) = &**base {
+                if name == var {
+                    if let Some(n) = extract_integer(exp) {
+                        if n.is_integer() {
+                            if n == -Rational::from_integer(1.into()) {
+                                return Some(Expr::Log(var_expr.clone().boxed()));
+                            }
+                            let k: BigInt = n.to_integer() + 1;
+                            return Some(Expr::Div(
+                                Expr::Pow(
+                                    var_expr.clone().boxed(),
+                                    Expr::Constant(Rational::from_integer(k.clone())).boxed(),
+                                )
+                                .boxed(),
+                                Expr::Constant(Rational::from_integer(k)).boxed(),
+                            ));
+                        }
+                    }
                 }
             }
             None
         }
+        _ => None,
+    }
+}
+
+fn extract_integer(expr: &Expr) -> Option<Rational> {
+    match expr {
+        Expr::Constant(n) => Some(n.clone()),
+        Expr::Neg(inner) => match &**inner {
+            Expr::Constant(n) => Some(-n.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }

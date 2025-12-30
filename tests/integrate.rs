@@ -46,6 +46,53 @@ fn integrates_polynomial_and_rational() {
 }
 
 #[test]
+fn integrates_affine_trig_exp_log_and_one_over_x() {
+    let sin_affine = parse_expr("sin(2*x + 3)").expect("parse sin affine");
+    let sin_res = integrate("x", &sin_affine);
+    match sin_res {
+        IntegrationResult::Integrated { result, .. } => assert_eq!(
+            simplify_fully(result),
+            simplify_parse("-1/2 * cos(2*x + 3)"),
+            "sin(kx+b) should integrate with linear coefficient"
+        ),
+        other => panic!("expected sin affine integration, got {other:?}"),
+    }
+
+    let exp_affine = parse_expr("exp(2*x + 1)").expect("parse exp affine");
+    let exp_res = integrate("x", &exp_affine);
+    match exp_res {
+        IntegrationResult::Integrated { result, .. } => assert_eq!(
+            simplify_fully(result),
+            simplify_parse("1/2 * exp(2*x + 1)"),
+            "exp(kx+b) should integrate with linear coefficient"
+        ),
+        other => panic!("expected exp affine integration, got {other:?}"),
+    }
+
+    let log_linear = parse_expr("log(2*x + 3)").expect("parse log linear");
+    let log_res = integrate("x", &log_linear);
+    match log_res {
+        IntegrationResult::Integrated { result, .. } => assert_eq!(
+            simplify_fully(result),
+            simplify_parse("((2*x + 3)*log(2*x + 3) - (2*x + 3)) / 2"),
+            "log(kx+b) should use linear-change-of-variables formula"
+        ),
+        other => panic!("expected log linear integration, got {other:?}"),
+    }
+
+    let inv_x = parse_expr("x^-1").expect("parse x^-1");
+    let inv_res = integrate("x", &inv_x);
+    match inv_res {
+        IntegrationResult::Integrated { result, .. } => assert_eq!(
+            simplify_fully(result),
+            simplify_parse("log(x)"),
+            "x^-1 should integrate to log(x)"
+        ),
+        other => panic!("expected x^-1 integration, got {other:?}"),
+    }
+}
+
+#[test]
 fn substitution_and_parts_heuristics() {
     let sub_expr = parse_expr("2*x*exp(x^2)").expect("parse substitution case");
     let res = integrate("x", &sub_expr);
@@ -118,5 +165,33 @@ fn flags_non_elementary_inputs() {
             );
         }
         other => panic!("expected trig/x non-elementary flag, got {other:?}"),
+    }
+
+    let res_other_var = integrate("y", &exp_square);
+    match res_other_var {
+        IntegrationResult::Integrated { result, .. } => {
+            assert_eq!(
+                simplify_fully(result),
+                simplify_parse("y*exp(x^2)"),
+                "treat exp(x^2) as constant when integrating wrt y"
+            );
+        }
+        other => panic!("expected constant-wrt-other-var integration, got {other:?}"),
+    }
+}
+
+#[test]
+fn integrates_constants_wrt_other_var() {
+    let expr = parse_expr("x*sin(x)").expect("parse constant wrt y");
+    let res = integrate("y", &expr);
+    match res {
+        IntegrationResult::Integrated { result, .. } => {
+            assert_eq!(
+                simplify_fully(result),
+                simplify_parse("x*sin(x)*y"),
+                "treat x*sin(x) as constant when integrating wrt y"
+            );
+        }
+        other => panic!("expected integration treating expression as constant, got {other:?}"),
     }
 }

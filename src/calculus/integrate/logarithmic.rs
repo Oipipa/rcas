@@ -1,4 +1,7 @@
 use crate::expr::{Expr, Rational};
+use num_traits::Zero;
+
+use super::linear_parts;
 
 pub fn is_log(expr: &Expr) -> bool {
     match expr {
@@ -22,10 +25,17 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
             }
             _ => None,
         },
-        Expr::Log(u) => Some(Expr::Sub(
-            Expr::Mul(u.clone(), Expr::Log(u.clone()).boxed()).boxed(),
-            u.clone(),
-        )),
+        Expr::Log(u) => {
+            if let Some((coef, _, v)) = linear_parts(u) {
+                if v == var && !coef.is_zero() {
+                    let u_expr = u.clone();
+                    let u_log = Expr::Mul(u_expr.clone().boxed(), Expr::Log(u_expr.clone()).boxed());
+                    let numerator = Expr::Sub(u_log.boxed(), u_expr.clone());
+                    return Some(Expr::Div(numerator.boxed(), Expr::Constant(coef).boxed()));
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
