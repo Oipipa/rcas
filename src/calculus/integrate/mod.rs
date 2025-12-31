@@ -226,7 +226,7 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             },
         };
     } else {
-        let status = if is_rational_like(expr, var) {
+        let status = if rational::is_rational(expr, var) || is_rational_like(expr, var) {
             AttemptStatus::Failed(ReasonCode::NonRational)
         } else {
             AttemptStatus::NotApplicable
@@ -433,11 +433,25 @@ fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
     if let Some(non_elem) = detect_non_elementary(expr) {
         return IntegrandKind::NonElementary(non_elem);
     }
+    if let Expr::Mul(a, b) = expr {
+        if matches!(&**a, Expr::Constant(_)) {
+            let inner = classify_integrand(b, var);
+            if !matches!(inner, IntegrandKind::Unknown | IntegrandKind::Sum) {
+                return inner;
+            }
+        }
+        if matches!(&**b, Expr::Constant(_)) {
+            let inner = classify_integrand(a, var);
+            if !matches!(inner, IntegrandKind::Unknown | IntegrandKind::Sum) {
+                return inner;
+            }
+        }
+    }
     if polynomial::is_polynomial(expr, var) {
         return IntegrandKind::Polynomial;
     }
-    if rational::is_rational(expr, var) {
-        return IntegrandKind::Rational { linear: true };
+    if let Some(linear) = rational::rational_kind(expr, var) {
+        return IntegrandKind::Rational { linear };
     }
     if is_rational_like(expr, var) {
         return IntegrandKind::Rational { linear: false };
@@ -543,6 +557,7 @@ fn expr_size(expr: &Expr) -> usize {
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Atan(inner)
         | Expr::Exp(inner)
         | Expr::Log(inner) => expr_size(inner),
         Expr::Variable(_) | Expr::Constant(_) => 0,
@@ -568,6 +583,7 @@ pub(crate) fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Atan(inner)
         | Expr::Exp(inner)
         | Expr::Log(inner) => contains_var(inner, var),
         Expr::Constant(_) => false,

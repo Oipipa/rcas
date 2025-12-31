@@ -59,6 +59,7 @@ pub fn pretty(expr: &Expr) -> String {
             Expr::Sin(a) => format!("sin({})", pp(0, a)),
             Expr::Cos(a) => format!("cos({})", pp(0, a)),
             Expr::Tan(a) => format!("tan({})", pp(0, a)),
+            Expr::Atan(a) => format!("arctan({})", pp(0, a)),
             Expr::Exp(a) => format!("exp({})", pp(0, a)),
             Expr::Log(a) => format!("log({})", pp(0, a)),
         }

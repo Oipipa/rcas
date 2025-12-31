@@ -549,6 +549,7 @@ fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Atan(inner)
         | Expr::Exp(inner)
         | Expr::Log(inner) => contains_var(inner, var),
         Expr::Constant(_) => false,

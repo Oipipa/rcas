@@ -107,6 +107,81 @@ fn assert_polynomial_roundtrip(input: &str) {
     }
 }
 
+fn assert_rational_integral(input: &str, expected: &str) {
+    let expr = simplify_parse(input);
+    let expected_expr = simplify_parse(expected);
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            assert!(
+                matches!(report.kind, IntegrandKind::Rational { .. }),
+                "integrand kind for {input}: {:?}",
+                report.kind
+            );
+            assert_eq!(
+                simplify_fully(result),
+                expected_expr,
+                "integral of {input} should match expected form"
+            );
+        }
+        other => panic!("expected rational integration for {input}, got {other:?}"),
+    }
+}
+
+fn eval_expr_f64(expr: &Expr, var: &str, x: f64) -> f64 {
+    match expr {
+        Expr::Constant(c) => c.to_f64().expect("convert constant"),
+        Expr::Variable(v) => {
+            if v == var {
+                x
+            } else {
+                0.0
+            }
+        }
+        Expr::Add(a, b) => eval_expr_f64(a, var, x) + eval_expr_f64(b, var, x),
+        Expr::Sub(a, b) => eval_expr_f64(a, var, x) - eval_expr_f64(b, var, x),
+        Expr::Mul(a, b) => eval_expr_f64(a, var, x) * eval_expr_f64(b, var, x),
+        Expr::Div(a, b) => eval_expr_f64(a, var, x) / eval_expr_f64(b, var, x),
+        Expr::Pow(base, exp) => {
+            let e = match &**exp {
+                Expr::Constant(c) => c.to_f64().expect("numeric exponent"),
+                _ => panic!("non-constant exponent in eval"),
+            };
+            eval_expr_f64(base, var, x).powf(e)
+        }
+        Expr::Neg(inner) => -eval_expr_f64(inner, var, x),
+        Expr::Sin(inner) => eval_expr_f64(inner, var, x).sin(),
+        Expr::Cos(inner) => eval_expr_f64(inner, var, x).cos(),
+        Expr::Tan(inner) => eval_expr_f64(inner, var, x).tan(),
+        Expr::Atan(inner) => eval_expr_f64(inner, var, x).atan(),
+        Expr::Exp(inner) => eval_expr_f64(inner, var, x).exp(),
+        Expr::Log(inner) => eval_expr_f64(inner, var, x).ln(),
+    }
+}
+
+fn assert_rational_roundtrip(input: &str, samples: &[f64]) {
+    let expr = simplify_parse(input);
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            assert!(
+                matches!(report.kind, IntegrandKind::Rational { .. }),
+                "integrand kind for {input}"
+            );
+            let derivative = simplify_fully(differentiate("x", &result));
+            let target = simplify_fully(expr);
+            for &sample in samples {
+                let lhs = eval_expr_f64(&derivative, "x", sample);
+                let rhs = eval_expr_f64(&target, "x", sample);
+                let delta = (lhs - rhs).abs();
+                assert!(
+                    delta < 1e-8,
+                    "roundtrip diff for {input} at x={sample} -> {delta}"
+                );
+            }
+        }
+        other => panic!("expected rational integration for {input}, got {other:?}"),
+    }
+}
+
 #[test]
 fn integrates_polynomial_and_rational() {
     let poly = parse_expr("x^3").expect("parse poly");
@@ -403,5 +478,128 @@ fn polynomial_nontrivial_suite() {
     assert_eq!(roundtrip_cases.len(), 19, "expected roundtrip cases");
     for input in roundtrip_cases {
         assert_polynomial_roundtrip(input);
+    }
+}
+
+#[test]
+fn rational_trivial_suite() {
+    let cases = vec![
+        ("1/(x + 1)", "log(x + 1)"),
+        ("3/(2*x + 1)", "3/2*log(x + 1/2)"),
+        ("(x + 2)/(x + 1)", "x + log(x + 1)"),
+        ("(2*x + 3)/(x + 1)", "2*x + log(x + 1)"),
+        ("(x - 1)/x", "x - log(x)"),
+        ("5/(x - 2)", "5*log(x - 2)"),
+        ("-4/(3*x - 1)", "-4/3*log(x - 1/3)"),
+        ("1/(x - 1)^2", "-1*(x - 1)^-1"),
+        ("(2*x + 1)/(x - 3)^2", "2*log(x - 3) - 7*(x - 3)^-1"),
+        ("(x^2 + 1)/x", "1/2*x^2 + log(x)"),
+        ("(x^2 + 2*x)/x", "1/2*x^2 + 2*x"),
+        ("(3*x^2 + 5*x + 2)/(x + 2)", "3/2*x^2 - x + 4*log(x + 2)"),
+        ("x/(x^2 - 4)", "1/2*log(x - 2) + 1/2*log(x + 2)"),
+        ("1/((x + 1)*(x + 2))", "log(x + 1) - log(x + 2)"),
+        ("2/(x^2 - 1)", "log(x - 1) - log(x + 1)"),
+        ("(x + 1)/(x*(x + 1))", "log(x)"),
+        ("5/(x^2 + 2*x + 1)", "-5*(x + 1)^-1"),
+        ("(4*x + 6)/(2*x + 3)", "2*x"),
+        ("(2*x + 1)/(2*x + 3)", "x - log(x + 3/2)"),
+        ("(-3*x + 5)/(x - 4)", "-3*x - 7*log(x - 4)"),
+        ("(x^3 + x)/(x^2 + 1)", "1/2*x^2"),
+        ("(x^2 + 4*x + 4)/(x + 2)", "1/2*x^2 + 2*x"),
+        ("(2*x^2 + 3*x + 4)/(x + 1)", "x^2 + x + 3*log(x + 1)"),
+        ("(x + 4)/(x - 1)", "x + 5*log(x - 1)"),
+        ("7/(5*x - 2)", "7/5*log(x - 2/5)"),
+    ];
+
+    assert_eq!(cases.len(), 25, "expected 25 trivial rational cases");
+    for (input, expected) in cases {
+        assert_rational_integral(input, expected);
+    }
+}
+
+#[test]
+fn rational_nontrivial_suite() {
+    let expected_cases = vec![
+        (
+            "1/(x^2 + 1)",
+            "2/(4)^(1/2)*arctan((2*x)/(4)^(1/2))",
+        ),
+        (
+            "1/(x^2 + x + 1)",
+            "2/(3)^(1/2)*arctan((2*x + 1)/(3)^(1/2))",
+        ),
+        (
+            "(2*x + 5)/(x^2 + 4*x + 5)",
+            "log(x^2 + 4*x + 5) + 2/(4)^(1/2)*arctan((2*x + 4)/(4)^(1/2))",
+        ),
+        (
+            "(3*x + 1)/(x^2 + 2)",
+            "3/2*log(x^2 + 2) + 2/(8)^(1/2)*arctan((2*x)/(8)^(1/2))",
+        ),
+        (
+            "(x + 1)/(x^2 + 4)",
+            "1/2*log(x^2 + 4) + 2/(16)^(1/2)*arctan((2*x)/(16)^(1/2))",
+        ),
+        ("x/(x^2 + 1)^2", "-1/2*(x^2 + 1)^-1"),
+        (
+            "1/(x^2 + 1)^2",
+            "1/(4)^(1/2)*arctan((2*x)/(4)^(1/2)) + 2*x/(4*x^2 + 4)",
+        ),
+        (
+            "1/((x + 1)*(x^2 + 1))",
+            "1/2*log(x + 1) - 1/4*log(x^2 + 1) + 1/(4)^(1/2)*arctan((2*x)/(4)^(1/2))",
+        ),
+        (
+            "(x - 1)/(x^2 + x + 1)",
+            "1/2*log(x^2 + x + 1) - 3/(3)^(1/2)*arctan((2*x + 1)/(3)^(1/2))",
+        ),
+        (
+            "x/(x^2 + 2*x + 2)",
+            "1/2*log(x^2 + 2*x + 2) - 2/(4)^(1/2)*arctan((2*x + 2)/(4)^(1/2))",
+        ),
+        ("(x + 3)/(x^2 + 6*x + 13)", "1/2*log(x^2 + 6*x + 13)"),
+        (
+            "(2*x + 3)/(x^2 + 4)",
+            "log(x^2 + 4) + 6/(16)^(1/2)*arctan((2*x)/(16)^(1/2))",
+        ),
+    ];
+
+    let roundtrip_cases: Vec<(&str, Vec<f64>)> = vec![
+        ("(3*x^2 + 5*x + 7)/(x^2 + 1)", vec![-1.1, -0.3, 0.8, 1.5]),
+        ("(x^3 + 2*x)/(x^2 + 1)", vec![-1.3, -0.4, 0.9, 1.7]),
+        ("(x^2 + 2*x + 2)/((x + 1)^2)", vec![0.5, 1.5, 2.5]),
+        ("(x^2 + 1)/(x + 1)^3", vec![0.5, 1.0, 2.0]),
+        ("(x + 2)/((x - 1)*(x^2 + 4))", vec![1.5, 2.5, 3.5]),
+        (
+            "(2*x + 3)/((x - 2)^2*(x^2 + 1))",
+            vec![2.5, 3.0, 4.0],
+        ),
+        ("(x^4 + 1)/(x^2 + 1)", vec![-1.2, -0.6, 0.6, 1.2]),
+        ("(x^2)/(x^2 + 4)", vec![-2.5, -1.0, 1.0, 2.5]),
+        ("(3*x + 1)/((x + 2)^2)", vec![-1.0, 0.5, 2.0]),
+        (
+            "(2*x^2 + 4*x + 5)/((x + 1)*(x^2 + 1))",
+            vec![0.5, 1.5, 2.5],
+        ),
+        (
+            "(x^2 + 3*x + 5)/(x*(x^2 + 1))",
+            vec![0.5, 1.5, 2.5],
+        ),
+        ("(x^2 + 4)/(x^2 - 4)", vec![2.5, 3.5, 5.0]),
+        ("(x^2 + 5*x + 6)/(x^2 + 1)", vec![-2.0, -1.0, 1.0, 2.0]),
+    ];
+
+    assert_eq!(
+        expected_cases.len() + roundtrip_cases.len(),
+        25,
+        "expected 25 non-trivial rational cases"
+    );
+
+    for (input, expected) in expected_cases {
+        assert_rational_integral(input, expected);
+    }
+
+    for (input, samples) in roundtrip_cases {
+        assert_rational_roundtrip(input, &samples);
     }
 }

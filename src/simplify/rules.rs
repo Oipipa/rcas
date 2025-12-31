@@ -45,6 +45,12 @@ fn simplify_cached(expr: Expr, cache: &mut HashMap<Expr, Expr>) -> Expr {
             x => Expr::Tan(x.boxed()),
         },
 
+        Expr::Atan(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => zero(),
+            Expr::Neg(inner) => simplify_neg(Expr::Atan(inner.boxed())),
+            x => Expr::Atan(x.boxed()),
+        },
+
         Expr::Exp(a) => match simplify_cached(*a, cache) {
             x if is_zero(&x) => one(),
             x => Expr::Exp(x.boxed()),

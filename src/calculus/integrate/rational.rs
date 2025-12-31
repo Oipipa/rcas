@@ -1,21 +1,34 @@
 use crate::expr::{Expr, Rational};
-use crate::factor::{Poly, factor_polynomial};
+use crate::factor::{Factorization, Poly, factor_polynomial};
 use crate::simplify::simplify;
 use num_bigint::BigInt;
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, Zero};
+
+pub fn rational_kind(expr: &Expr, var: &str) -> Option<bool> {
+    let (num, den) = match expr {
+        Expr::Div(a, b) => (a, b),
+        _ => return None,
+    };
+
+    Poly::from_expr(num, var)?;
+    let den_poly = Poly::from_expr(den, var)?;
+    if den_poly.is_zero() {
+        return None;
+    }
+
+    let degree = den_poly.degree()?;
+    if degree == 0 {
+        return None;
+    }
+
+    let linear = factor_polynomial(den, var)
+        .map(|f| f.factors.iter().all(|factor| factor.poly.degree() == Some(1)))
+        .unwrap_or(false);
+    Some(linear)
+}
 
 pub fn is_rational(expr: &Expr, var: &str) -> bool {
-    match expr {
-        Expr::Div(num, den) => {
-            let num_poly = Poly::from_expr(num, var);
-            let den_poly = Poly::from_expr(den, var);
-            match (num_poly, den_poly) {
-                (Some(_), Some(d)) => d.degree() == Some(1),
-                _ => false,
-            }
-        }
-        _ => false,
-    }
+    rational_kind(expr, var).is_some()
 }
 
 pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
@@ -26,19 +39,17 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
 
     let num_poly = Poly::from_expr(num, var)?;
     let den_poly = Poly::from_expr(den, var)?;
-    if den_poly.is_zero() {
+    if den_poly.is_zero() || den_poly.degree()? == 0 {
         return None;
     }
 
     let (quotient, remainder) = num_poly.div_rem(&den_poly);
     let mut pieces: Vec<Expr> = Vec::new();
+
     if !quotient.is_zero() {
         let q_expr = quotient.to_expr(var);
-        if let Some(poly_int) = super::polynomial::integrate(&q_expr, var) {
-            pieces.push(poly_int);
-        } else {
-            return None;
-        }
+        let poly_int = super::polynomial::integrate(&q_expr, var)?;
+        pieces.push(poly_int);
     }
 
     if remainder.is_zero() {
@@ -49,98 +60,250 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
     if factorization.constant.is_zero() {
         return None;
     }
+
     if !factorization
         .factors
         .iter()
-        .all(|f| f.poly.degree() == Some(1))
+        .all(|f| matches!(f.poly.degree(), Some(1 | 2)))
     {
         return None;
     }
 
-    let pf = integrate_partial_fraction(&remainder, &den_poly, &factorization, var)?;
+    let scaled_remainder = remainder.scale(&(Rational::one() / factorization.constant.clone()));
+    let denominator = build_denominator(&factorization);
+    let pf = integrate_partial_fraction(&scaled_remainder, &denominator, &factorization, var)?;
     pieces.push(pf);
+
     Some(simplify(sum_exprs(pieces)))
+}
+
+fn build_denominator(factorization: &Factorization) -> Poly {
+    let mut result = Poly::one();
+    for factor in &factorization.factors {
+        result = result * factor.poly.pow(factor.multiplicity);
+    }
+    result
 }
 
 fn integrate_partial_fraction(
     remainder: &Poly,
     denominator: &Poly,
-    factorization: &crate::factor::Factorization,
+    factorization: &Factorization,
     var: &str,
 ) -> Option<Expr> {
-    let unknowns: usize = factorization.factors.iter().map(|f| f.multiplicity).sum();
-    if unknowns == 0 {
+    let basis = basis_for_system(denominator, factorization, var)?;
+    let degree = denominator.degree()?;
+    if basis.len() != degree {
         return None;
     }
 
-    let mut basis: Vec<Poly> = Vec::new();
-    for factor in &factorization.factors {
-        let mut divisor = Poly::one();
-        for _ in 0..factor.multiplicity {
-            divisor = divisor * factor.poly.clone();
-            let (term, rem) = denominator.div_rem(&divisor);
-            if !rem.is_zero() {
-                return None;
-            }
-            basis.push(term);
-        }
-    }
-
-    let degree = denominator.degree().unwrap_or(0);
-    if degree == 0 {
-        return None;
-    }
-    let mut matrix: Vec<Vec<Rational>> = vec![vec![Rational::zero(); unknowns + 1]; degree];
-
+    let mut matrix: Vec<Vec<Rational>> = vec![vec![Rational::zero(); degree + 1]; degree];
     for (col, poly) in basis.iter().enumerate() {
-        for (exp, coeff) in poly.coeffs.iter() {
-            if *exp < degree {
-                matrix[*exp][col] += coeff.clone();
+        for (exp, coeff) in poly.coeff_entries() {
+            if exp < degree {
+                matrix[exp][col] += coeff;
             }
         }
     }
-
-    for (exp, coeff) in remainder.coeffs.iter() {
-        if *exp < degree {
-            matrix[*exp][unknowns] = coeff.clone();
+    for (exp, coeff) in remainder.coeff_entries() {
+        if exp < degree {
+            matrix[exp][degree] = coeff;
         }
     }
 
     let solution = solve_linear_system(matrix)?;
     let mut terms: Vec<Expr> = Vec::new();
     let mut idx = 0;
+
     for factor in &factorization.factors {
-        let root = factor.poly.linear_root()?;
-        let base = Expr::Sub(
-            Expr::Variable(var.to_string()).boxed(),
-            Expr::Constant(root.clone()).boxed(),
-        );
-        for k in 1..=factor.multiplicity {
-            let coeff = solution.get(idx)?.clone();
-            idx += 1;
-            if coeff.is_zero() {
-                continue;
+        match factor.poly.degree()? {
+            1 => {
+                for power in 1..=factor.multiplicity {
+                    let coeff = solution.get(idx)?.clone();
+                    idx += 1;
+                    if coeff.is_zero() {
+                        continue;
+                    }
+                    terms.push(integrate_linear_term(coeff, &factor.poly, power, var)?);
+                }
             }
-            if k == 1 {
-                terms.push(Expr::Mul(
-                    Expr::Constant(coeff).boxed(),
-                    Expr::Log(base.clone().boxed()).boxed(),
-                ));
-            } else {
-                let exponent = Rational::from_integer(BigInt::from(1 - k as i64));
-                let pow = Expr::Pow(
-                    base.clone().boxed(),
-                    Expr::Constant(exponent.clone()).boxed(),
-                );
-                let scale =
-                    Rational::one() / Rational::from_integer(BigInt::from(1_i64 - k as i64));
-                let combined = coeff * scale;
-                terms.push(Expr::Mul(Expr::Constant(combined).boxed(), pow.boxed()));
+            2 => {
+                for power in 1..=factor.multiplicity {
+                    let coeff_x = solution.get(idx)?.clone();
+                    let coeff_const = solution.get(idx + 1)?.clone();
+                    idx += 2;
+                    if coeff_x.is_zero() && coeff_const.is_zero() {
+                        continue;
+                    }
+                    terms.push(integrate_quadratic_term(
+                        coeff_x,
+                        coeff_const,
+                        &factor.poly,
+                        power,
+                        var,
+                    )?);
+                }
+            }
+            _ => return None,
+        }
+    }
+
+    if idx != solution.len() {
+        return None;
+    }
+
+    Some(simplify(sum_exprs(terms)))
+}
+
+fn basis_for_system(
+    denominator: &Poly,
+    factorization: &Factorization,
+    var: &str,
+) -> Option<Vec<Poly>> {
+    let mut basis = Vec::new();
+    let x_poly = Poly::from_expr(&Expr::Variable(var.to_string()), var)?;
+
+    for factor in &factorization.factors {
+        let degree = factor.poly.degree()?;
+        for power in 1..=factor.multiplicity {
+            let divisor = factor.poly.pow(power);
+            let term = denominator.div_exact(&divisor)?;
+            match degree {
+                1 => basis.push(term),
+                2 => {
+                    basis.push(term.clone() * x_poly.clone());
+                    basis.push(term);
+                }
+                _ => return None,
             }
         }
     }
 
-    Some(simplify(sum_exprs(terms)))
+    Some(basis)
+}
+
+fn integrate_linear_term(coeff: Rational, factor: &Poly, power: usize, var: &str) -> Option<Expr> {
+    if coeff.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    let base = factor.to_expr(var);
+    if power == 1 {
+        return Some(Expr::Mul(
+            Expr::Constant(coeff).boxed(),
+            Expr::Log(base.boxed()).boxed(),
+        ));
+    }
+
+    let exponent = Rational::from_integer(BigInt::from(1_i64 - power as i64));
+    let pow = Expr::Pow(base.boxed(), Expr::Constant(exponent.clone()).boxed());
+    let scale = coeff
+        / Rational::from_integer(BigInt::from(1_i64 - power as i64));
+    Some(Expr::Mul(Expr::Constant(scale).boxed(), pow.boxed()))
+}
+
+fn integrate_quadratic_term(
+    coeff_x: Rational,
+    coeff_const: Rational,
+    factor: &Poly,
+    power: usize,
+    var: &str,
+) -> Option<Expr> {
+    if coeff_x.is_zero() && coeff_const.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+
+    let a = factor.coeff(2);
+    if a.is_zero() {
+        return None;
+    }
+    let b = factor.coeff(1);
+    let two = Rational::from_integer(2.into());
+    let alpha = coeff_x.clone() / (two.clone() * a.clone());
+    let beta = coeff_const.clone() - alpha.clone() * b.clone();
+
+    let q_expr = factor.to_expr(var);
+    let mut parts: Vec<Expr> = Vec::new();
+
+    if !alpha.is_zero() {
+        if power == 1 {
+            parts.push(Expr::Mul(
+                Expr::Constant(alpha.clone()).boxed(),
+                Expr::Log(q_expr.clone().boxed()).boxed(),
+            ));
+        } else {
+            let exponent = Rational::from_integer(BigInt::from(1_i64 - power as i64));
+            let pow = Expr::Pow(q_expr.clone().boxed(), Expr::Constant(exponent.clone()).boxed());
+            let scale = alpha
+                / Rational::from_integer(BigInt::from(1_i64 - power as i64));
+            parts.push(Expr::Mul(Expr::Constant(scale).boxed(), pow.boxed()));
+        }
+    }
+
+    if !beta.is_zero() {
+        let inv = integrate_quadratic_inverse(factor, power, var)?;
+        parts.push(Expr::Mul(
+            Expr::Constant(beta).boxed(),
+            inv.boxed(),
+        ));
+    }
+
+    Some(simplify(sum_exprs(parts)))
+}
+
+fn integrate_quadratic_inverse(factor: &Poly, power: usize, var: &str) -> Option<Expr> {
+    if power == 0 {
+        return None;
+    }
+
+    let a = factor.coeff(2);
+    if a.is_zero() {
+        return None;
+    }
+    let b = factor.coeff(1);
+    let c = factor.coeff(0);
+
+    let four = Rational::from_integer(4.into());
+    let delta = four * a.clone() * c.clone() - b.clone() * b.clone();
+    if delta.is_zero() || delta.is_negative() {
+        return None;
+    }
+
+    let sqrt_delta = Expr::Pow(
+        Expr::Constant(delta.clone()).boxed(),
+        Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+    );
+    let q_expr = factor.to_expr(var);
+    let deriv_expr = factor.derivative().to_expr(var);
+
+    if power == 1 {
+        let leading = Expr::Div(
+            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+            sqrt_delta.clone().boxed(),
+        );
+        let atan_arg = Expr::Div(deriv_expr.boxed(), sqrt_delta.clone().boxed());
+        let atan_expr = Expr::Atan(atan_arg.boxed());
+        return Some(Expr::Mul(leading.boxed(), atan_expr.boxed()));
+    }
+
+    let k_minus_one = Rational::from_integer(BigInt::from(power as i64 - 1));
+    let denom_coeff = k_minus_one.clone() * delta.clone();
+    let q_power = Expr::Pow(
+        q_expr.clone().boxed(),
+        Expr::Constant(Rational::from_integer(BigInt::from(power as i64 - 1))).boxed(),
+    );
+    let first_term = Expr::Div(
+        deriv_expr.boxed(),
+        Expr::Mul(Expr::Constant(denom_coeff.clone()).boxed(), q_power.boxed()).boxed(),
+    );
+
+    let two = Rational::from_integer(2.into());
+    let recur_coeff = (two.clone() * a.clone())
+        * Rational::from_integer(BigInt::from(2 * power as i64 - 3))
+        / denom_coeff;
+    let previous = integrate_quadratic_inverse(factor, power - 1, var)?;
+    let scaled_prev = Expr::Mul(Expr::Constant(recur_coeff).boxed(), previous.boxed());
+
+    Some(simplify(Expr::Add(first_term.boxed(), scaled_prev.boxed())))
 }
 
 fn solve_linear_system(mut matrix: Vec<Vec<Rational>>) -> Option<Vec<Rational>> {
@@ -184,17 +347,23 @@ fn solve_linear_system(mut matrix: Vec<Vec<Rational>>) -> Option<Vec<Rational>> 
     }
 
     let mut solution = vec![Rational::zero(); cols];
-    for i in 0..cols {
+    for i in 0..cols.min(rows) {
         solution[i] = matrix[i][cols].clone();
     }
     Some(solution)
 }
 
 fn sum_exprs(exprs: Vec<Expr>) -> Expr {
-    if exprs.is_empty() {
+    let filtered: Vec<Expr> = exprs
+        .into_iter()
+        .filter(|e| !matches!(e, Expr::Constant(c) if c.is_zero()))
+        .collect();
+
+    if filtered.is_empty() {
         return Expr::Constant(Rational::zero());
     }
-    exprs
+
+    filtered
         .into_iter()
         .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
         .unwrap()

@@ -40,6 +40,18 @@ impl<'a> Differentiator<'a> {
                 );
                 simplify(Expr::Mul(da.boxed(), sec2.boxed()))
             }
+            Expr::Atan(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Add(
+                    one().boxed(),
+                    Expr::Pow(
+                        a.clone().boxed(),
+                        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                    )
+                    .boxed(),
+                );
+                simplify(Expr::Div(da.boxed(), denom.boxed()))
+            }
 
             Expr::Exp(a) => simplify(Expr::Mul(
                 self.derive(a).boxed(),

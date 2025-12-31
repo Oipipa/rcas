@@ -21,6 +21,7 @@ pub enum Expr {
     Sin(Box<Expr>),
     Cos(Box<Expr>),
     Tan(Box<Expr>),
+    Atan(Box<Expr>),
     Exp(Box<Expr>),
     Log(Box<Expr>),
 }
