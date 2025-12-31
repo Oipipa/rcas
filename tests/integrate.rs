@@ -394,6 +394,35 @@ fn assert_substitution_integral(input: &str, expected: &str) {
     }
 }
 
+fn assert_non_elementary(input: &str, expected: NonElementaryKind) {
+    let expr = parse_expr(input).expect("parse non-elementary input");
+    let expected_kind = expected.clone();
+    let expected_reason = ReasonCode::NonElementary(expected);
+    match integrate("x", &expr) {
+        IntegrationResult::NotIntegrable(report) => {
+            assert_eq!(
+                report.kind,
+                IntegrandKind::NonElementary(expected_kind),
+                "non-elementary kind for {input}"
+            );
+            assert_eq!(
+                report.reason,
+                Some(expected_reason),
+                "non-elementary reason for {input}"
+            );
+            assert!(
+                report.attempts.iter().any(|a| a.strategy == Strategy::RischLite),
+                "risch-lite should be recorded for {input}"
+            );
+            assert!(
+                report.attempts.iter().any(|a| a.strategy == Strategy::MeijerG),
+                "meijer-g should be recorded for {input}"
+            );
+        }
+        other => panic!("expected non-elementary classification for {input}, got {other:?}"),
+    }
+}
+
 #[test]
 fn integrates_polynomial_and_rational() {
     let poly = parse_expr("x^3").expect("parse poly");
@@ -600,6 +629,109 @@ fn flags_non_elementary_inputs() {
             );
         }
         other => panic!("expected constant-wrt-other-var integration, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_elementary_classification_trivial() {
+    let cases = vec![
+        ("exp(x^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(x^2 + 1)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(x^2 + x)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(3*x^2 + 2*x + 1)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x+1)^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x-1)^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((2*x+3)^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x+2)*(x+1))", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x+1)^2 + x)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x+1)^2 + 3)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(x^2 - 4*x + 4)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x-2)*(x-2))", NonElementaryKind::ExpOfPolynomial),
+        ("sin(x)/x", NonElementaryKind::TrigOverArgument),
+        ("sin(2*x)/(2*x)", NonElementaryKind::TrigOverArgument),
+        ("sin(x+1)/(x+1)", NonElementaryKind::TrigOverArgument),
+        ("sin(3*x - 1)/(3*x - 1)", NonElementaryKind::TrigOverArgument),
+        ("sin(-x)/x", NonElementaryKind::TrigOverArgument),
+        ("sin(x)/(-x)", NonElementaryKind::TrigOverArgument),
+        ("sin(5*x)/(5*x)", NonElementaryKind::TrigOverArgument),
+        ("cos(x)/x", NonElementaryKind::TrigOverArgument),
+        ("cos(2*x)/(2*x)", NonElementaryKind::TrigOverArgument),
+        ("cos(x+1)/(x+1)", NonElementaryKind::TrigOverArgument),
+        ("cos(3*x - 1)/(3*x - 1)", NonElementaryKind::TrigOverArgument),
+        ("cos(-x)/x", NonElementaryKind::TrigOverArgument),
+        ("cos(x)/(-x)", NonElementaryKind::TrigOverArgument),
+    ];
+
+    assert_eq!(cases.len(), 25, "expected 25 trivial non-elementary cases");
+    for (input, expected) in cases {
+        assert_non_elementary(input, expected);
+    }
+}
+
+#[test]
+fn non_elementary_classification_non_trivial() {
+    let cases = vec![
+        ("exp(x^3)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(x^3 + x)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(x^4 - 2*x^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x+1)^3)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((2*x-1)^3)", NonElementaryKind::ExpOfPolynomial),
+        ("2*exp(x^3)", NonElementaryKind::ExpOfPolynomial),
+        ("y*exp(x^3)", NonElementaryKind::ExpOfPolynomial),
+        ("x^x", NonElementaryKind::PowerSelf),
+        ("2*x^x", NonElementaryKind::PowerSelf),
+        ("-1*x^x", NonElementaryKind::PowerSelf),
+        ("x^x/2", NonElementaryKind::PowerSelf),
+        ("y*x^x", NonElementaryKind::PowerSelf),
+        ("x^x*y", NonElementaryKind::PowerSelf),
+        ("x^x*log(x)", NonElementaryKind::PowerSelfLog),
+        ("log(x)*x^x", NonElementaryKind::PowerSelfLog),
+        ("2*x^x*log(x)", NonElementaryKind::PowerSelfLog),
+        ("x^x*log(x)/3", NonElementaryKind::PowerSelfLog),
+        ("y*x^x*log(x)", NonElementaryKind::PowerSelfLog),
+        ("x^x*log(x)*y", NonElementaryKind::PowerSelfLog),
+        (
+            "sin(x^2)/x^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "cos(x^2)/x^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "sin((x+1)^2)/(x+1)^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "cos((x-2)^2)/(x-2)^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "sin(2*x^2)/(2*x^2)",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "cos(3*x^2)/(3*x^2)",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+    ];
+
+    assert_eq!(cases.len(), 25, "expected 25 non-trivial non-elementary cases");
+    for (input, expected) in cases {
+        assert_non_elementary(input, expected);
+    }
+}
+
+#[test]
+fn non_elementary_detection_allows_substitution_cases() {
+    let cases = vec![
+        ("x", "2*x*exp(x^2)", "exp(x^2)"),
+        ("x", "2*x*sin(x^2)", "-cos(x^2)"),
+        ("x", "2*x*cos(x^2)", "sin(x^2)"),
+    ];
+
+    for (var, input, expected) in cases {
+        assert_integral_with_var(var, input, expected);
     }
 }
 

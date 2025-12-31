@@ -3,12 +3,17 @@ use std::collections::BTreeMap;
 use crate::expr::{Expr, Rational};
 use crate::simplify::simplify;
 use num_bigint::BigInt;
-use num_traits::{One, Zero};
+use num_traits::{One, ToPrimitive, Zero};
 
 use super::{contains_var, linear_parts, log_abs};
 
 pub fn is_polynomial(expr: &Expr, var: &str) -> bool {
     matches!(detect_form(expr, var), Some(_))
+}
+
+pub(crate) fn degree(expr: &Expr, var: &str) -> Option<usize> {
+    let poly = Polynomial::from_expr(expr, var)?;
+    poly.degree()
 }
 
 pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
@@ -161,6 +166,14 @@ impl Polynomial {
         let mut terms = BTreeMap::new();
         terms.insert(BigInt::zero(), expr);
         Polynomial { terms }
+    }
+
+    fn degree(&self) -> Option<usize> {
+        if let Some(exp) = self.terms.keys().next_back() {
+            exp.to_usize()
+        } else {
+            Some(0)
+        }
     }
 
     fn add(&self, other: &Self) -> Self {

@@ -40,6 +40,9 @@ pub enum IntegrandKind {
 pub enum NonElementaryKind {
     ExpOfPolynomial,
     TrigOverArgument,
+    TrigOverPolynomialArgument,
+    PowerSelf,
+    PowerSelfLog,
     SpecialFunctionNeeded,
 }
 
@@ -113,16 +116,10 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             },
         };
     }
-    if let Some(non_elem) = detect_non_elementary(expr) {
-        return IntegrationResult::NotIntegrable(IntegrandReport {
-            kind: IntegrandKind::NonElementary(non_elem.clone()),
-            reason: Some(ReasonCode::NonElementary(non_elem)),
-            attempts: Vec::new(),
-        });
-    }
     let original_expr = expr.clone();
     let normalized = normalize(expr.clone());
     let mut attempts = Vec::new();
+    let mut non_elem = detect_non_elementary(expr, var);
     let original_poly = polynomial::is_polynomial(&original_expr, var);
     let original_rat = rational::rational_kind(&original_expr, var);
     let mut kind = if original_poly {
@@ -138,14 +135,13 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     };
     let expr = &expr_owned;
 
-    if let Some(non_elem) = detect_non_elementary(expr) {
-        kind = IntegrandKind::NonElementary(non_elem.clone());
-        let report = IntegrandReport {
-            kind,
-            reason: Some(ReasonCode::NonElementary(non_elem)),
-            attempts,
-        };
-        return IntegrationResult::NotIntegrable(report);
+    if non_elem.is_none() {
+        non_elem = detect_non_elementary(expr, var);
+    }
+    if let Some(ref detected) = non_elem {
+        if !matches!(kind, IntegrandKind::NonElementary(_)) {
+            kind = IntegrandKind::NonElementary(detected.clone());
+        }
     }
 
     if let Some(result) = integrate_direct(expr, var) {
@@ -169,6 +165,40 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         status: AttemptStatus::Failed(default_reason(&kind)),
         note: None,
     });
+
+    if let Some(non_elem) = non_elem.clone() {
+        let reason = ReasonCode::NonElementary(non_elem.clone());
+        attempts.push(IntegrationAttempt {
+            strategy: Strategy::Substitution,
+            status: AttemptStatus::Failed(reason.clone()),
+            note: None,
+        });
+        attempts.push(IntegrationAttempt {
+            strategy: Strategy::IntegrationByParts,
+            status: AttemptStatus::Failed(reason.clone()),
+            note: None,
+        });
+        attempts.push(IntegrationAttempt {
+            strategy: Strategy::PartialFractions,
+            status: AttemptStatus::Failed(reason.clone()),
+            note: None,
+        });
+        attempts.push(IntegrationAttempt {
+            strategy: Strategy::RischLite,
+            status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("risch-lite")),
+            note: None,
+        });
+        attempts.push(IntegrationAttempt {
+            strategy: Strategy::MeijerG,
+            status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("meijer-g expansion")),
+            note: None,
+        });
+        return IntegrationResult::NotIntegrable(IntegrandReport {
+            kind: IntegrandKind::NonElementary(non_elem),
+            reason: Some(reason),
+            attempts,
+        });
+    }
 
     let size = expr_size(expr);
     let simplified_for_sub = simplify_fully(expr.clone());
@@ -297,7 +327,10 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         note: None,
     });
 
-    let reason = Some(default_reason(&kind));
+    let reason = Some(match non_elem {
+        Some(non_elem) => ReasonCode::NonElementary(non_elem),
+        None => default_reason(&kind),
+    });
     IntegrationResult::NotIntegrable(IntegrandReport {
         kind,
         reason,
@@ -1098,7 +1131,7 @@ fn integrate_partial_fractions(expr: &Expr, var: &str) -> Option<Expr> {
 }
 
 fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
-    if let Some(non_elem) = detect_non_elementary(expr) {
+    if let Some(non_elem) = detect_non_elementary(expr, var) {
         return IntegrandKind::NonElementary(non_elem);
     }
     if let Expr::Mul(a, b) = expr {
@@ -1143,20 +1176,46 @@ fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
     }
 }
 
-fn detect_non_elementary(expr: &Expr) -> Option<NonElementaryKind> {
+fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
+    if !contains_var(expr, var) {
+        return None;
+    }
+
+    match expr {
+        Expr::Mul(_, _) | Expr::Div(_, _) | Expr::Neg(_) => {
+            let (_, var_factors) = split_constant_factors(expr, var);
+            if var_factors.len() == 1 {
+                if let Some(kind) = detect_non_elementary_core(&var_factors[0], var) {
+                    return Some(kind);
+                }
+            }
+            if let Some(kind) = detect_power_self_log(&var_factors, var) {
+                return Some(kind);
+            }
+        }
+        _ => {}
+    }
+
+    detect_non_elementary_core(expr, var)
+}
+
+fn detect_non_elementary_core(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
     match expr {
         Expr::Exp(arg) => {
-            if let Some(deg) = polynomial_degree(arg) {
+            if let Some(deg) = polynomial_degree(arg, var) {
                 if deg > 1 {
                     return Some(NonElementaryKind::ExpOfPolynomial);
                 }
             }
         }
+        Expr::Pow(base, exp) => {
+            if is_pow_self(base, exp, var) {
+                return Some(NonElementaryKind::PowerSelf);
+            }
+        }
         Expr::Div(num, den) => {
-            if matches!(&**num, Expr::Sin(_)) || matches!(&**num, Expr::Cos(_)) {
-                if is_linear_match(num, den) {
-                    return Some(NonElementaryKind::TrigOverArgument);
-                }
+            if let Some(kind) = trig_over_argument_kind(num, den, var) {
+                return Some(kind);
             }
         }
         _ => {}
@@ -1164,47 +1223,74 @@ fn detect_non_elementary(expr: &Expr) -> Option<NonElementaryKind> {
     None
 }
 
-fn is_linear_match(num: &Expr, den: &Expr) -> bool {
-    let inner = match num {
-        Expr::Sin(arg) | Expr::Cos(arg) => arg,
-        _ => return false,
+fn trig_over_argument_kind(num: &Expr, den: &Expr, var: &str) -> Option<NonElementaryKind> {
+    let arg = match num {
+        Expr::Sin(arg) | Expr::Cos(arg) | Expr::Tan(arg) => arg,
+        _ => return None,
     };
-    match (&**inner, den) {
-        (Expr::Variable(v1), Expr::Variable(v2)) => v1 == v2,
-        (Expr::Variable(v1), Expr::Mul(a, b)) => match (&**a, &**b) {
-            (Expr::Constant(_), Expr::Variable(v2)) | (Expr::Variable(v2), Expr::Constant(_)) => {
-                v1 == v2
-            }
+    if constant_ratio(den, arg, var).is_none() {
+        return None;
+    }
+    let degree = polynomial_degree(arg, var)?;
+    if degree > 1 {
+        Some(NonElementaryKind::TrigOverPolynomialArgument)
+    } else if degree == 1 {
+        Some(NonElementaryKind::TrigOverArgument)
+    } else {
+        None
+    }
+}
+
+fn detect_power_self_log(factors: &[Expr], var: &str) -> Option<NonElementaryKind> {
+    let mut saw_pow_self = false;
+    let mut saw_log = false;
+
+    for factor in factors {
+        if is_pow_self_expr(factor, var) {
+            saw_pow_self = true;
+            continue;
+        }
+        if is_log_var(factor, var) {
+            saw_log = true;
+            continue;
+        }
+        if contains_var(factor, var) {
+            return None;
+        }
+    }
+
+    if saw_pow_self && saw_log {
+        Some(NonElementaryKind::PowerSelfLog)
+    } else {
+        None
+    }
+}
+
+fn is_pow_self(base: &Expr, exp: &Expr, var: &str) -> bool {
+    matches!(base, Expr::Variable(name) if name == var)
+        && matches!(exp, Expr::Variable(name) if name == var)
+}
+
+fn is_pow_self_expr(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Pow(base, exp) => is_pow_self(base, exp, var),
+        _ => false,
+    }
+}
+
+fn is_log_var(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Log(inner) => match &**inner {
+            Expr::Variable(name) if name == var => true,
+            Expr::Abs(inner) => matches!(&**inner, Expr::Variable(name) if name == var),
             _ => false,
         },
         _ => false,
     }
 }
 
-fn polynomial_degree(expr: &Expr) -> Option<usize> {
-    match expr {
-        Expr::Constant(_) => Some(0),
-        Expr::Variable(_) => Some(1),
-        Expr::Add(a, b) | Expr::Sub(a, b) => {
-            let da = polynomial_degree(a)?;
-            let db = polynomial_degree(b)?;
-            Some(da.max(db))
-        }
-        Expr::Mul(a, b) => {
-            let da = polynomial_degree(a)?;
-            let db = polynomial_degree(b)?;
-            Some(da + db)
-        }
-        Expr::Pow(base, exp) => match (&**base, &**exp) {
-            (Expr::Variable(_), Expr::Constant(k)) if k.is_integer() && k >= &Rational::zero() => {
-                k.to_integer().to_usize()
-            }
-            (Expr::Constant(_), Expr::Constant(_)) => Some(0),
-            _ => None,
-        },
-        Expr::Neg(inner) => polynomial_degree(inner),
-        _ => None,
-    }
+fn polynomial_degree(expr: &Expr, var: &str) -> Option<usize> {
+    polynomial::degree(expr, var)
 }
 
 fn is_rational_like(expr: &Expr, var: &str) -> bool {
