@@ -94,7 +94,20 @@ fn parse_identifier(input: &str) -> IResult<&str, Expr, VerboseError<&str>> {
 
 fn parse_function(input: &str) -> IResult<&str, Expr, VerboseError<&str>> {
     let (rest, (name, arg)) = pair(
-        alt((tag("sin"), tag("cos"), tag("tan"), tag("arctan"), tag("exp"), tag("log"))),
+        alt((
+            tag("sin"),
+            tag("cos"),
+            tag("tan"),
+            tag("arctan"),
+            tag("atan"),
+            tag("arcsin"),
+            tag("asin"),
+            tag("arccos"),
+            tag("acos"),
+            tag("exp"),
+            tag("log"),
+            tag("abs"),
+        )),
         alt((
             delimited(ws(char('(')), parse_add_sub, ws(char(')'))),
             parse_primary,
@@ -105,9 +118,12 @@ fn parse_function(input: &str) -> IResult<&str, Expr, VerboseError<&str>> {
         "sin" => Expr::Sin(arg.boxed()),
         "cos" => Expr::Cos(arg.boxed()),
         "tan" => Expr::Tan(arg.boxed()),
-        "arctan" => Expr::Atan(arg.boxed()),
+        "arctan" | "atan" => Expr::Atan(arg.boxed()),
+        "arcsin" | "asin" => Expr::Asin(arg.boxed()),
+        "arccos" | "acos" => Expr::Acos(arg.boxed()),
         "exp" => Expr::Exp(arg.boxed()),
         "log" => Expr::Log(arg.boxed()),
+        "abs" => Expr::Abs(arg.boxed()),
         _ => unreachable!(),
     };
 

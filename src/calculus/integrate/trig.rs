@@ -1,16 +1,27 @@
 use crate::expr::{Expr, Rational};
+use crate::simplify::simplify;
+use num_traits::{One, ToPrimitive, Zero};
+use num_bigint::BigInt;
 
-use super::coeff_of_var;
+use super::{coeff_of_var, flatten_product, linear_parts, log_abs};
 
 pub fn is_trig(expr: &Expr) -> bool {
-    matches!(expr, Expr::Sin(_) | Expr::Cos(_) | Expr::Tan(_))
+    matches!(
+        expr,
+        Expr::Sin(_)
+            | Expr::Cos(_)
+            | Expr::Tan(_)
+            | Expr::Atan(_)
+            | Expr::Asin(_)
+            | Expr::Acos(_)
+    )
 }
 
 pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
     match expr {
         Expr::Sin(arg) => {
             let k = coeff_of_var(arg, var)?;
-            let base = Expr::Neg(Expr::Cos(arg.clone()).boxed());
+            let base = Expr::Neg(Expr::Cos(arg.clone().boxed()).boxed());
             Some(if k == Rational::from_integer(1.into()) {
                 base
             } else {
@@ -20,20 +31,433 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
         Expr::Cos(arg) => {
             let k = coeff_of_var(arg, var)?;
             Some(if k == Rational::from_integer(1.into()) {
-                Expr::Sin(arg.clone())
+                Expr::Sin(arg.clone().boxed())
             } else {
-                Expr::Div(Expr::Sin(arg.clone()).boxed(), Expr::Constant(k).boxed())
+                Expr::Div(Expr::Sin(arg.clone().boxed()).boxed(), Expr::Constant(k).boxed())
             })
         }
-        Expr::Tan(arg) => {
-            let k = coeff_of_var(arg, var)?;
-            let base = Expr::Neg(Expr::Log(Expr::Cos(arg.clone()).boxed()).boxed());
-            Some(if k == Rational::from_integer(1.into()) {
-                base
-            } else {
-                Expr::Div(base.boxed(), Expr::Constant(k).boxed())
-            })
-        }
+        Expr::Tan(arg) => integrate_tan(arg, var),
+        Expr::Pow(base, exp) => match (&**base, &**exp) {
+            (Expr::Sin(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                integrate_sin_power(inner, p, var)
+            }
+            (Expr::Cos(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                integrate_cos_power(inner, p, var)
+            }
+            _ => None,
+        },
+        Expr::Mul(_, _) => integrate_sin_cos_product(expr, var),
+        Expr::Asin(arg) => integrate_arcsin(arg, var),
+        Expr::Acos(arg) => integrate_arccos(arg, var),
+        Expr::Atan(arg) => integrate_arctan(arg, var),
         _ => None,
     }
+}
+
+fn integrate_tan(arg: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(arg, var)?;
+    let base = Expr::Neg(log_abs(Expr::Cos(arg.clone().boxed())).boxed());
+    Some(if k == Rational::from_integer(1.into()) {
+        base
+    } else {
+        Expr::Div(base.boxed(), Expr::Constant(k).boxed())
+    })
+}
+
+fn pow_to_i64(p: &Rational) -> Option<i64> {
+    if !p.is_integer() || p < &Rational::zero() {
+        return None;
+    }
+    p.to_integer().to_i64()
+}
+
+fn scale_by_coeff(expr: Expr, k: Rational) -> Expr {
+    if k == Rational::from_integer(1.into()) {
+        expr
+    } else {
+        Expr::Div(expr.boxed(), Expr::Constant(k).boxed())
+    }
+}
+
+fn integrate_sin_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr> {
+    let n = pow_to_i64(power)?;
+    let k = coeff_of_var(inner, var)?;
+    let integral = sin_power_reduction(n, inner)?;
+    Some(scale_by_coeff(integral, k))
+}
+
+fn integrate_cos_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr> {
+    let n = pow_to_i64(power)?;
+    let k = coeff_of_var(inner, var)?;
+    let integral = cos_power_reduction(n, inner)?;
+    Some(scale_by_coeff(integral, k))
+}
+
+fn sin_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
+    if n < 0 {
+        return None;
+    }
+    if n == 0 {
+        return Some(inner.clone());
+    }
+    if n == 1 {
+        return Some(Expr::Neg(Expr::Cos(inner.clone().boxed()).boxed()));
+    }
+    if n == 3 {
+        let cos_inner = Expr::Cos(inner.clone().boxed());
+        let cos_cubed = Expr::Pow(
+            cos_inner.clone().boxed(),
+            Expr::Constant(Rational::from_integer(3.into())).boxed(),
+        );
+        return Some(Expr::Add(
+            Expr::Neg(cos_inner.boxed()).boxed(),
+            Expr::Mul(
+                Expr::Constant(Rational::new(1.into(), 3.into())).boxed(),
+                cos_cubed.boxed(),
+            )
+            .boxed(),
+        ));
+    }
+    let n_r = Rational::from_integer(n.into());
+    let n_minus_one = Rational::from_integer((n - 1).into());
+    let leading = Expr::Div(
+        Expr::Mul(
+            Expr::Neg(Expr::Cos(inner.clone().boxed()).boxed()).boxed(),
+            Expr::Pow(
+                Expr::Sin(inner.clone().boxed()).boxed(),
+                Expr::Constant(n_minus_one.clone()).boxed(),
+            )
+            .boxed(),
+        )
+        .boxed(),
+        Expr::Constant(n_r.clone()).boxed(),
+    );
+    let reduced = sin_power_reduction(n - 2, inner)?;
+    let scaled = Expr::Mul(
+        Expr::Constant(n_minus_one / n_r.clone()).boxed(),
+        reduced.boxed(),
+    );
+    Some(simplify(Expr::Add(leading.boxed(), scaled.boxed())))
+}
+
+fn cos_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
+    if n < 0 {
+        return None;
+    }
+    if n == 0 {
+        return Some(inner.clone());
+    }
+    if n == 1 {
+        return Some(Expr::Sin(inner.clone().boxed()));
+    }
+    if n == 3 {
+        let sin_inner = Expr::Sin(inner.clone().boxed());
+        let sin_cubed = Expr::Pow(
+            sin_inner.clone().boxed(),
+            Expr::Constant(Rational::from_integer(3.into())).boxed(),
+        );
+        return Some(Expr::Sub(
+            sin_inner.boxed(),
+            Expr::Mul(
+                Expr::Constant(Rational::new(1.into(), 3.into())).boxed(),
+                sin_cubed.boxed(),
+            )
+            .boxed(),
+        ));
+    }
+    let n_r = Rational::from_integer(n.into());
+    let n_minus_one = Rational::from_integer((n - 1).into());
+    let leading = Expr::Div(
+        Expr::Mul(
+            Expr::Sin(inner.clone().boxed()).boxed(),
+            Expr::Pow(
+                Expr::Cos(inner.clone().boxed()).boxed(),
+                Expr::Constant(n_minus_one.clone()).boxed(),
+            )
+            .boxed(),
+        )
+        .boxed(),
+        Expr::Constant(n_r.clone()).boxed(),
+    );
+    let reduced = cos_power_reduction(n - 2, inner)?;
+    let scaled = Expr::Mul(
+        Expr::Constant(n_minus_one / n_r.clone()).boxed(),
+        reduced.boxed(),
+    );
+    Some(simplify(Expr::Add(leading.boxed(), scaled.boxed())))
+}
+
+fn integrate_sin_cos_product(expr: &Expr, var: &str) -> Option<Expr> {
+    let (const_factor, factors) = flatten_product(expr);
+    if const_factor.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    let mut sin_exp = 0_i64;
+    let mut cos_exp = 0_i64;
+    let mut inner: Option<Expr> = None;
+
+    for factor in factors {
+        match factor {
+            Expr::Sin(arg) => {
+                inner = match inner {
+                    None => Some(*arg.clone()),
+                    Some(ref existing) if *existing == *arg => Some(existing.clone()),
+                    _ => return None,
+                };
+                sin_exp += 1;
+            }
+            Expr::Cos(arg) => {
+                inner = match inner {
+                    None => Some(*arg.clone()),
+                    Some(ref existing) if *existing == *arg => Some(existing.clone()),
+                    _ => return None,
+                };
+                cos_exp += 1;
+            }
+            Expr::Pow(base, exp) => match (&*base, &*exp) {
+                (Expr::Sin(arg), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                    inner = match inner {
+                        None => Some(*arg.clone()),
+                        Some(ref existing) if *existing == **arg => Some(existing.clone()),
+                        _ => return None,
+                    };
+                    sin_exp += pow_to_i64(p)?;
+                }
+                (Expr::Cos(arg), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                    inner = match inner {
+                        None => Some(*arg.clone()),
+                        Some(ref existing) if *existing == **arg => Some(existing.clone()),
+                        _ => return None,
+                    };
+                    cos_exp += pow_to_i64(p)?;
+                }
+                _ => return None,
+            },
+            Expr::Constant(_) => {}
+            _ => return None,
+        }
+    }
+
+    let inner = inner?;
+    let k = coeff_of_var(&inner, var)?;
+    let combined = integrate_sin_cos_powers(sin_exp, cos_exp, &inner, k)?;
+    let scaled = simplify(combined);
+    if const_factor == Rational::from_integer(1.into()) {
+        Some(scaled)
+    } else {
+        Some(Expr::Mul(
+            Expr::Constant(const_factor).boxed(),
+            scaled.boxed(),
+        ))
+    }
+}
+
+fn integrate_sin_cos_powers(
+    sin_exp: i64,
+    cos_exp: i64,
+    inner: &Expr,
+    k: Rational,
+) -> Option<Expr> {
+    if sin_exp == 0 && cos_exp == 0 {
+        return None;
+    }
+    if cos_exp == 0 {
+        return sin_power_reduction(sin_exp, inner).map(|r| scale_by_coeff(r, k.clone()));
+    }
+    if sin_exp == 0 {
+        return cos_power_reduction(cos_exp, inner).map(|r| scale_by_coeff(r, k.clone()));
+    }
+
+    if sin_exp == 1 && cos_exp == 1 {
+        let cos_sq = Expr::Pow(
+            Expr::Cos(inner.clone().boxed()).boxed(),
+            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+        );
+        let result = Expr::Mul(
+            Expr::Constant(Rational::new((-1).into(), 2.into())).boxed(),
+            cos_sq.boxed(),
+        );
+        return Some(scale_by_coeff(result, k));
+    }
+
+    if sin_exp % 2 == 1 {
+        return integrate_with_cos_substitution(sin_exp, cos_exp, inner, k);
+    }
+    if cos_exp % 2 == 1 {
+        return integrate_with_sin_substitution(sin_exp, cos_exp, inner, k);
+    }
+
+    if sin_exp == 2 && cos_exp == 2 {
+        let four = Rational::from_integer(4.into());
+        let eight = Rational::from_integer(8.into());
+        let thirty_two = Rational::from_integer(32.into());
+        let scaled_inner = Expr::Mul(
+            Expr::Constant(four.clone()).boxed(),
+            inner.clone().boxed(),
+        );
+        let linear_term = Expr::Div(inner.clone().boxed(), Expr::Constant(eight).boxed());
+        let oscillatory = Expr::Div(
+            Expr::Sin(scaled_inner.boxed()).boxed(),
+            Expr::Constant(thirty_two).boxed(),
+        );
+        let combined = Expr::Sub(linear_term.boxed(), oscillatory.boxed());
+        return Some(scale_by_coeff(combined, k));
+    }
+
+    None
+}
+
+fn choose(n: i64, k: i64) -> Rational {
+    if k < 0 || k > n {
+        return Rational::zero();
+    }
+    let mut num = BigInt::from(1_i64);
+    let mut den = BigInt::from(1_i64);
+    for i in 0..k {
+        num *= n - i;
+        den *= i + 1;
+    }
+    Rational::new(num, den)
+}
+
+fn integrate_with_cos_substitution(
+    sin_exp: i64,
+    cos_exp: i64,
+    inner: &Expr,
+    k: Rational,
+) -> Option<Expr> {
+    if sin_exp < 1 {
+        return None;
+    }
+    let m = (sin_exp - 1) / 2;
+    let mut terms: Vec<Expr> = Vec::new();
+    for j in 0..=m {
+        let coeff = choose(m, j);
+        let power = cos_exp + 2 * j + 1;
+        let denom = Rational::from_integer(power.into());
+        let sign = if j % 2 == 0 {
+            Rational::one()
+        } else {
+            -Rational::one()
+        };
+        let factor = Expr::Mul(
+            Expr::Constant(-sign * coeff.clone() / denom.clone()).boxed(),
+            Expr::Pow(
+                Expr::Cos(inner.clone().boxed()).boxed(),
+                Expr::Constant(Rational::from_integer(power.into())).boxed(),
+            )
+            .boxed(),
+        );
+        terms.push(factor);
+    }
+    let sum = terms
+        .into_iter()
+        .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+        .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+    Some(scale_by_coeff(sum, k.clone()))
+}
+
+fn integrate_with_sin_substitution(
+    sin_exp: i64,
+    cos_exp: i64,
+    inner: &Expr,
+    k: Rational,
+) -> Option<Expr> {
+    if cos_exp < 1 {
+        return None;
+    }
+    let m = (cos_exp - 1) / 2;
+    let mut terms: Vec<Expr> = Vec::new();
+    for j in 0..=m {
+        let coeff = choose(m, j);
+        let power = sin_exp + 2 * j + 1;
+        let denom = Rational::from_integer(power.into());
+        let sign = if j % 2 == 0 {
+            Rational::one()
+        } else {
+            -Rational::one()
+        };
+        let factor = Expr::Mul(
+            Expr::Constant(sign * coeff.clone() / denom.clone()).boxed(),
+            Expr::Pow(
+                Expr::Sin(inner.clone().boxed()).boxed(),
+                Expr::Constant(Rational::from_integer(power.into())).boxed(),
+            )
+            .boxed(),
+        );
+        terms.push(factor);
+    }
+    let sum = terms
+        .into_iter()
+        .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+        .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+    Some(scale_by_coeff(sum, k.clone()))
+}
+
+fn integrate_arcsin(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c, v) = linear_parts(arg)?;
+    if v != var || k.is_zero() {
+        return None;
+    }
+    let inner = Expr::Add(
+        Expr::Mul(Expr::Constant(k.clone()).boxed(), Expr::Variable(v.clone()).boxed()).boxed(),
+        Expr::Constant(c.clone()).boxed(),
+    );
+    let sqrt = Expr::Pow(
+        Expr::Sub(
+            Expr::Constant(Rational::one()).boxed(),
+            Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into())).boxed(),
+    );
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Asin(inner.clone().boxed()).boxed());
+    Some(Expr::Div(
+        Expr::Add(term.boxed(), sqrt.boxed()).boxed(),
+        Expr::Constant(k).boxed(),
+    ))
+}
+
+fn integrate_arccos(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c, v) = linear_parts(arg)?;
+    if v != var || k.is_zero() {
+        return None;
+    }
+    let inner = Expr::Add(
+        Expr::Mul(Expr::Constant(k.clone()).boxed(), Expr::Variable(v.clone()).boxed()).boxed(),
+        Expr::Constant(c.clone()).boxed(),
+    );
+    let sqrt = Expr::Pow(
+        Expr::Sub(
+            Expr::Constant(Rational::one()).boxed(),
+            Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into())).boxed(),
+    );
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Acos(inner.clone().boxed()).boxed());
+    Some(Expr::Div(
+        Expr::Sub(term.boxed(), sqrt.boxed()).boxed(),
+        Expr::Constant(k).boxed(),
+    ))
+}
+
+fn integrate_arctan(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c, v) = linear_parts(arg)?;
+    if v != var || k.is_zero() {
+        return None;
+    }
+    let inner = Expr::Add(
+        Expr::Mul(Expr::Constant(k.clone()).boxed(), Expr::Variable(v.clone()).boxed()).boxed(),
+        Expr::Constant(c.clone()).boxed(),
+    );
+    let log_term = log_abs(Expr::Add(
+        Expr::Constant(Rational::one()).boxed(),
+        Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed()).boxed(),
+    ));
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Atan(inner.clone().boxed()).boxed());
+    Some(Expr::Div(
+        Expr::Sub(term.boxed(), Expr::Div(log_term.boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed()).boxed()).boxed(),
+        Expr::Constant(k).boxed(),
+    ))
 }

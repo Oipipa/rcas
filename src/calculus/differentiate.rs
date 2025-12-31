@@ -52,12 +52,55 @@ impl<'a> Differentiator<'a> {
                 );
                 simplify(Expr::Div(da.boxed(), denom.boxed()))
             }
+            Expr::Asin(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Pow(
+                    Expr::Sub(
+                        one().boxed(),
+                        Expr::Pow(
+                            a.clone().boxed(),
+                            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                        )
+                        .boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                        .boxed(),
+                );
+                simplify(Expr::Div(da.boxed(), denom.boxed()))
+            }
+            Expr::Acos(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Pow(
+                    Expr::Sub(
+                        one().boxed(),
+                        Expr::Pow(
+                            a.clone().boxed(),
+                            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                        )
+                        .boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                        .boxed(),
+                );
+                simplify(Expr::Neg(
+                    Expr::Div(da.boxed(), denom.boxed()).boxed(),
+                ))
+            }
 
             Expr::Exp(a) => simplify(Expr::Mul(
                 self.derive(a).boxed(),
                 Expr::Exp(a.clone()).boxed(),
             )),
             Expr::Log(a) => simplify(Expr::Div(self.derive(a).boxed(), a.clone().boxed())),
+            Expr::Abs(a) => {
+                let da = self.strip_one(self.derive(a));
+                simplify(Expr::Div(
+                    Expr::Mul(a.clone().boxed(), da.boxed()).boxed(),
+                    Expr::Abs(a.clone().boxed()).boxed(),
+                ))
+            }
         }
     }
 

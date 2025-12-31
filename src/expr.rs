@@ -22,8 +22,11 @@ pub enum Expr {
     Cos(Box<Expr>),
     Tan(Box<Expr>),
     Atan(Box<Expr>),
+    Asin(Box<Expr>),
+    Acos(Box<Expr>),
     Exp(Box<Expr>),
     Log(Box<Expr>),
+    Abs(Box<Expr>),
 }
 
 impl Expr {

@@ -25,6 +25,25 @@ pub fn linear_parts(expr: &Expr) -> Option<(Rational, Rational, String)> {
                 _ => None,
             }
         }
+        Expr::Sub(a, b) => {
+            let left = as_linear_term(a)?;
+            let right = as_linear_term(b)?;
+            match (left, right) {
+                (LinearTerm::Var(coef, var), LinearTerm::Const(c)) => Some((coef, -c, var)),
+                (LinearTerm::Const(c), LinearTerm::Var(coef, var)) => Some((-coef, c, var)),
+                (LinearTerm::Var(c1, v1), LinearTerm::Var(c2, v2)) if v1 == v2 => {
+                    Some((c1 - c2, Rational::from_integer(0.into()), v1))
+                }
+                (LinearTerm::Const(c1), LinearTerm::Const(c2)) => {
+                    Some((Rational::from_integer(0.into()), c1 - c2, "x".into()))
+                }
+                _ => None,
+            }
+        }
+        Expr::Neg(inner) => {
+            let (coef, constant, var) = linear_parts(inner)?;
+            Some((-coef, -constant, var))
+        }
         Expr::Mul(a, b) => {
             const_var(a, b).map(|(coef, var)| (coef, Rational::from_integer(0.into()), var))
         }

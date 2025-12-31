@@ -3,6 +3,7 @@ use crate::factor::{Factorization, Poly, factor_polynomial};
 use crate::simplify::simplify;
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
+use super::log_abs;
 
 pub fn rational_kind(expr: &Expr, var: &str) -> Option<bool> {
     let (num, den) = match expr {
@@ -186,18 +187,26 @@ fn integrate_linear_term(coeff: Rational, factor: &Poly, power: usize, var: &str
     if coeff.is_zero() {
         return Some(Expr::Constant(Rational::zero()));
     }
+    let leading = factor.coeff(1);
+    if leading.is_zero() {
+        return None;
+    }
     let base = factor.to_expr(var);
+    let base_monic = Expr::Add(
+        Expr::Variable(var.to_string()).boxed(),
+        Expr::Constant(factor.coeff(0) / leading.clone()).boxed(),
+    );
     if power == 1 {
         return Some(Expr::Mul(
-            Expr::Constant(coeff).boxed(),
-            Expr::Log(base.boxed()).boxed(),
+            Expr::Constant(coeff / leading.clone()).boxed(),
+            log_abs(base_monic).boxed(),
         ));
     }
 
     let exponent = Rational::from_integer(BigInt::from(1_i64 - power as i64));
     let pow = Expr::Pow(base.boxed(), Expr::Constant(exponent.clone()).boxed());
     let scale = coeff
-        / Rational::from_integer(BigInt::from(1_i64 - power as i64));
+        / (leading * Rational::from_integer(BigInt::from(1_i64 - power as i64)));
     Some(Expr::Mul(Expr::Constant(scale).boxed(), pow.boxed()))
 }
 
@@ -228,7 +237,7 @@ fn integrate_quadratic_term(
         if power == 1 {
             parts.push(Expr::Mul(
                 Expr::Constant(alpha.clone()).boxed(),
-                Expr::Log(q_expr.clone().boxed()).boxed(),
+                log_abs(q_expr.clone()).boxed(),
             ));
         } else {
             let exponent = Rational::from_integer(BigInt::from(1_i64 - power as i64));

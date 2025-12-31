@@ -25,7 +25,7 @@ pub fn pretty_integration_result(result: &IntegrationResult) -> Vec<String> {
 }
 
 fn describe_attempt(attempt: &IntegrationAttempt) -> String {
-    match &attempt.status {
+    let base = match &attempt.status {
         AttemptStatus::Succeeded => format!(" - {:?}: ok", attempt.strategy),
         AttemptStatus::NotApplicable => format!(" - {:?}: n/a", attempt.strategy),
         AttemptStatus::Failed(reason) => {
@@ -37,5 +37,10 @@ fn describe_attempt(attempt: &IntegrationAttempt) -> String {
                 attempt.strategy, size, limit
             )
         }
+    };
+    if let Some(note) = &attempt.note {
+        format!("{base} ({note})")
+    } else {
+        base
     }
 }

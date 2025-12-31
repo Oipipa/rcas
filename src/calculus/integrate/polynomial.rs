@@ -5,7 +5,7 @@ use crate::simplify::simplify;
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
-use super::contains_var;
+use super::{contains_var, log_abs};
 
 pub fn is_polynomial(expr: &Expr, var: &str) -> bool {
     matches!(detect_form(expr, var), Some(_))
@@ -65,7 +65,7 @@ fn integrate_linear_power(
             constant_factor.clone().boxed(),
             coeff.clone().boxed(),
         ));
-        return Some(Expr::Mul(scale.boxed(), Expr::Log(base.boxed()).boxed()));
+        return Some(Expr::Mul(scale.boxed(), log_abs(base).boxed()));
     }
 
     let next = exponent + Rational::one();

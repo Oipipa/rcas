@@ -51,6 +51,18 @@ fn simplify_cached(expr: Expr, cache: &mut HashMap<Expr, Expr>) -> Expr {
             x => Expr::Atan(x.boxed()),
         },
 
+        Expr::Asin(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => zero(),
+            Expr::Neg(inner) => simplify_neg(Expr::Asin(inner.boxed())),
+            x => Expr::Asin(x.boxed()),
+        },
+
+        Expr::Acos(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => Expr::Acos(zero().boxed()),
+            Expr::Neg(inner) => Expr::Acos(inner.boxed()),
+            x => Expr::Acos(x.boxed()),
+        },
+
         Expr::Exp(a) => match simplify_cached(*a, cache) {
             x if is_zero(&x) => one(),
             x => Expr::Exp(x.boxed()),
@@ -59,6 +71,12 @@ fn simplify_cached(expr: Expr, cache: &mut HashMap<Expr, Expr>) -> Expr {
         Expr::Log(a) => match simplify_cached(*a, cache) {
             x if is_one(&x) => zero(),
             x => Expr::Log(x.boxed()),
+        },
+
+        Expr::Abs(a) => match simplify_cached(*a, cache) {
+            Expr::Constant(c) => Expr::Constant(c.abs()),
+            Expr::Neg(inner) => Expr::Abs(inner.boxed()),
+            x => Expr::Abs(x.boxed()),
         },
 
         e => e,
