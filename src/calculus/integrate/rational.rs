@@ -1,18 +1,15 @@
 use crate::expr::{Expr, Rational};
-use crate::factor::{Factorization, Poly, factor_polynomial};
+use crate::factor::{factor_polynomial, Factorization, Poly};
 use crate::simplify::simplify;
+use super::{flatten_product, log_abs, rebuild_product};
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
-use super::log_abs;
 
 pub fn rational_kind(expr: &Expr, var: &str) -> Option<bool> {
-    let (num, den) = match expr {
-        Expr::Div(a, b) => (a, b),
-        _ => return None,
-    };
+    let (num, den) = as_division(expr)?;
 
-    Poly::from_expr(num, var)?;
-    let den_poly = Poly::from_expr(den, var)?;
+    Poly::from_expr(&num, var)?;
+    let den_poly = Poly::from_expr(&den, var)?;
     if den_poly.is_zero() {
         return None;
     }
@@ -22,7 +19,7 @@ pub fn rational_kind(expr: &Expr, var: &str) -> Option<bool> {
         return None;
     }
 
-    let linear = factor_polynomial(den, var)
+    let linear = factor_polynomial(&den, var)
         .map(|f| f.factors.iter().all(|factor| factor.poly.degree() == Some(1)))
         .unwrap_or(false);
     Some(linear)
@@ -33,13 +30,10 @@ pub fn is_rational(expr: &Expr, var: &str) -> bool {
 }
 
 pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
-    let (num, den) = match expr {
-        Expr::Div(a, b) => (a, b),
-        _ => return None,
-    };
+    let (num, den) = as_division(expr)?;
 
-    let num_poly = Poly::from_expr(num, var)?;
-    let den_poly = Poly::from_expr(den, var)?;
+    let num_poly = Poly::from_expr(&num, var)?;
+    let den_poly = Poly::from_expr(&den, var)?;
     if den_poly.is_zero() || den_poly.degree()? == 0 {
         return None;
     }
@@ -57,7 +51,7 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
         return Some(simplify(sum_exprs(pieces)));
     }
 
-    let factorization = factor_polynomial(den, var)?;
+    let factorization = factor_polynomial(&den, var)?;
     if factorization.constant.is_zero() {
         return None;
     }
@@ -154,6 +148,48 @@ fn integrate_partial_fraction(
     }
 
     Some(simplify(sum_exprs(terms)))
+}
+
+fn as_division(expr: &Expr) -> Option<(Expr, Expr)> {
+    match expr {
+        Expr::Div(a, b) => Some(((*a.clone()), (*b.clone()))),
+        _ => {
+            let (const_factor, factors) = flatten_product(expr);
+            if const_factor.is_zero() {
+                return Some((
+                    Expr::Constant(Rational::zero()),
+                    Expr::Constant(Rational::one()),
+                ));
+            }
+            let mut numerator: Vec<Expr> = Vec::new();
+            let mut denominator: Vec<Expr> = Vec::new();
+            for f in factors {
+                match f {
+                    Expr::Pow(base, exp) => {
+                        if let Expr::Constant(ref k) = *exp {
+                            if k.is_negative() {
+                                let flipped = Expr::Pow(
+                                    base.clone(),
+                                    Expr::Constant(-k.clone()).boxed(),
+                                );
+                                denominator.push(flipped);
+                                continue;
+                            }
+                        }
+                        numerator.push(Expr::Pow(base.clone(), exp.clone()));
+                    }
+                    other => numerator.push(other),
+                }
+            }
+            let num_expr = rebuild_product(const_factor.clone(), numerator);
+            let den_expr = if denominator.is_empty() {
+                Expr::Constant(Rational::one())
+            } else {
+                rebuild_product(Rational::one(), denominator)
+            };
+            Some((num_expr, den_expr))
+        }
+    }
 }
 
 fn basis_for_system(

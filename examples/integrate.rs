@@ -2,7 +2,7 @@ use rcas::{integrate, parse_expr, pretty_integration_result};
 
 fn main() {
     demo("non-elementary exp(x^2)", "exp(x^2)");
-    demo("tricky by-parts x*sin(x)", "x*sin(y)");
+    demo("tricky by-parts x*sin(x)", "y*sin(y/z)");
 }
 
 fn demo(label: &str, input: &str) {

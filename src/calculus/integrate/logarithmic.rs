@@ -1,5 +1,6 @@
 use crate::expr::{Expr, Rational};
-use num_traits::Zero;
+use crate::simplify::{simplify, simplify_fully};
+use num_traits::{One, Zero};
 
 use super::{linear_parts, log_abs};
 
@@ -26,16 +27,39 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
             _ => None,
         },
         Expr::Log(u) => {
-            if let Some((coef, _, v)) = linear_parts(u) {
-                if v == var && !coef.is_zero() {
-                    let u_expr = *u.clone();
-                    let u_log = Expr::Mul(u_expr.clone().boxed(), log_abs(u_expr.clone()).boxed());
-                    let numerator = Expr::Sub(u_log.boxed(), u_expr.clone().boxed());
-                    return Some(Expr::Div(numerator.boxed(), Expr::Constant(coef).boxed()));
-                }
+            let (coef, _) = linear_parts(u, var)?;
+            if is_const_zero(&coef) {
+                return None;
             }
-            None
+            let u_expr = *u.clone();
+            let u_log = Expr::Mul(u_expr.clone().boxed(), log_abs(u_expr.clone()).boxed());
+            let numerator = Expr::Sub(u_log.boxed(), u_expr.clone().boxed());
+            Some(scale_by_coeff(numerator, coef))
         }
         _ => None,
     }
+}
+
+fn is_const_zero(expr: &Expr) -> bool {
+    matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_zero())
+}
+
+fn invert_coeff(expr: Expr) -> Expr {
+    match expr {
+        Expr::Constant(c) => Expr::Constant(Rational::one() / c),
+        Expr::Neg(inner) => Expr::Neg(invert_coeff(*inner).boxed()),
+        Expr::Div(num, den) => Expr::Div(den, num),
+        Expr::Pow(base, exp) => match &*exp {
+            Expr::Constant(k) => Expr::Pow(base, Expr::Constant(-k.clone()).boxed()),
+            _ => Expr::Div(
+                Expr::Constant(Rational::one()).boxed(),
+                Expr::Pow(base, exp).boxed(),
+            ),
+        },
+        other => Expr::Div(Expr::Constant(Rational::one()).boxed(), other.boxed()),
+    }
+}
+
+fn scale_by_coeff(expr: Expr, coeff: Expr) -> Expr {
+    simplify(Expr::Mul(expr.boxed(), invert_coeff(coeff).boxed()))
 }

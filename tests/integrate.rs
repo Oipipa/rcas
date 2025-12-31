@@ -150,36 +150,63 @@ fn assert_rational_integral(input: &str, expected: &str) {
 }
 
 fn eval_expr_f64(expr: &Expr, var: &str, x: f64) -> f64 {
+    eval_expr_f64_with_default(expr, var, x, 0.0).expect("evaluate expression")
+}
+
+fn eval_expr_f64_with_default(
+    expr: &Expr,
+    var: &str,
+    x: f64,
+    default_other: f64,
+) -> Option<f64> {
     match expr {
-        Expr::Constant(c) => c.to_f64().expect("convert constant"),
+        Expr::Constant(c) => c.to_f64(),
         Expr::Variable(v) => {
             if v == var {
-                x
+                Some(x)
             } else {
-                0.0
+                Some(default_other)
             }
         }
-        Expr::Add(a, b) => eval_expr_f64(a, var, x) + eval_expr_f64(b, var, x),
-        Expr::Sub(a, b) => eval_expr_f64(a, var, x) - eval_expr_f64(b, var, x),
-        Expr::Mul(a, b) => eval_expr_f64(a, var, x) * eval_expr_f64(b, var, x),
-        Expr::Div(a, b) => eval_expr_f64(a, var, x) / eval_expr_f64(b, var, x),
-        Expr::Pow(base, exp) => {
-            let e = match &**exp {
-                Expr::Constant(c) => c.to_f64().expect("numeric exponent"),
-                _ => panic!("non-constant exponent in eval"),
-            };
-            eval_expr_f64(base, var, x).powf(e)
+        Expr::Add(a, b) => {
+            Some(eval_expr_f64_with_default(a, var, x, default_other)? + eval_expr_f64_with_default(b, var, x, default_other)?)
         }
-        Expr::Neg(inner) => -eval_expr_f64(inner, var, x),
-        Expr::Sin(inner) => eval_expr_f64(inner, var, x).sin(),
-        Expr::Cos(inner) => eval_expr_f64(inner, var, x).cos(),
-        Expr::Tan(inner) => eval_expr_f64(inner, var, x).tan(),
-        Expr::Atan(inner) => eval_expr_f64(inner, var, x).atan(),
-        Expr::Asin(inner) => eval_expr_f64(inner, var, x).asin(),
-        Expr::Acos(inner) => eval_expr_f64(inner, var, x).acos(),
-        Expr::Exp(inner) => eval_expr_f64(inner, var, x).exp(),
-        Expr::Log(inner) => eval_expr_f64(inner, var, x).abs().ln(),
-        Expr::Abs(inner) => eval_expr_f64(inner, var, x).abs(),
+        Expr::Sub(a, b) => {
+            Some(eval_expr_f64_with_default(a, var, x, default_other)? - eval_expr_f64_with_default(b, var, x, default_other)?)
+        }
+        Expr::Mul(a, b) => {
+            Some(eval_expr_f64_with_default(a, var, x, default_other)? * eval_expr_f64_with_default(b, var, x, default_other)?)
+        }
+        Expr::Div(a, b) => {
+            Some(
+                eval_expr_f64_with_default(a, var, x, default_other)?
+                    / eval_expr_f64_with_default(b, var, x, default_other)?,
+            )
+        }
+        Expr::Pow(base, exp) => {
+            let base_val = eval_expr_f64_with_default(base, var, x, default_other)?;
+            let exponent = match &**exp {
+                Expr::Constant(c) => c.to_f64()?,
+                _ => return None,
+            };
+            Some(base_val.powf(exponent))
+        }
+        Expr::Neg(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(|v| -v),
+        Expr::Sin(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::sin),
+        Expr::Cos(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::cos),
+        Expr::Tan(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::tan),
+        Expr::Atan(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::atan),
+        Expr::Asin(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::asin),
+        Expr::Acos(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::acos),
+        Expr::Exp(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::exp),
+        Expr::Log(inner) => {
+            Some(
+                eval_expr_f64_with_default(inner, var, x, default_other)?
+                    .abs()
+                    .ln(),
+            )
+        }
+        Expr::Abs(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::abs),
     }
 }
 
@@ -215,6 +242,37 @@ fn assert_numeric_roundtrip(input: &str, samples: &[f64]) {
             }
         }
         other => panic!("expected integration for {input}, got {other:?}"),
+    }
+}
+
+fn assert_integral_with_var(var: &str, input: &str, expected: &str) {
+    let expr = parse_expr(input).expect("parse expected integral input");
+    let expected_expr = simplify_parse(expected);
+    match integrate(var, &expr) {
+        IntegrationResult::Integrated { result, .. } => {
+            let simplified_result = simplify_fully(result);
+            if simplified_result != expected_expr {
+                let delta = simplify_fully(sub(simplified_result.clone(), expected_expr.clone()));
+                let samples = [-1.5, -0.75, 0.5, 1.25, 2.0];
+                let default_other = 1.3;
+                let mut baseline: Option<f64> = None;
+                for s in samples {
+                    let val =
+                        eval_expr_f64_with_default(&delta, var, s, default_other).unwrap();
+                    if let Some(b) = baseline {
+                        if (val - b).abs() > 1e-6 {
+                            assert!(
+                                val.abs() < 1e-6,
+                                "integral mismatch for {input} wrt {var}: delta={delta:?} at {s}"
+                            );
+                        }
+                    } else {
+                        baseline = Some(val);
+                    }
+                }
+            }
+        }
+        other => panic!("expected integration for {input} wrt {var}, got {other:?}"),
     }
 }
 
@@ -558,6 +616,113 @@ fn integrates_constants_wrt_other_var() {
             );
         }
         other => panic!("expected integration treating expression as constant, got {other:?}"),
+    }
+}
+
+#[test]
+fn substitution_preserves_constants_from_other_vars() {
+    let expr = parse_expr("x*sin(y)").expect("parse cross-var substitution case");
+    let res = integrate("y", &expr);
+    match res {
+        IntegrationResult::Integrated { result, report } => {
+            assert_eq!(
+                simplify_fully(result),
+                simplify_parse("-x*cos(y)"),
+                "constants independent of integration variable should be preserved"
+            );
+            assert!(
+                report.attempts.iter().any(|a| {
+                    (a.strategy == Strategy::Substitution || a.strategy == Strategy::Direct)
+                        && a.status == AttemptStatus::Succeeded
+                }),
+                "substitution or direct strategy should succeed"
+            );
+        }
+        other => panic!("expected integration for x*sin(y) wrt y, got {other:?}"),
+    }
+}
+
+#[test]
+fn odd_and_cross_variable_integrals() {
+    let cases: Vec<(&str, &str, &str)> = vec![
+        ("y", "sin(y/x)", "-x*cos(y/x)"),
+        ("y", "y*sin(y/x)", "x^2*sin(y/x) - x*y*cos(y/x)"),
+        ("y", "cos(y/x)/x", "sin(y/x)"),
+        ("y", "exp((y + 1)/x)", "x*exp((y + 1)/x)"),
+        ("y", "tan(y/x)/x", "-log(abs(cos(y/x)))"),
+        (
+            "y",
+            "(2*y + 3)/(y^2 + 3*y + 5)",
+            "log(abs(y^2 + 3*y + 5))",
+        ),
+        (
+            "y",
+            "(6*y - 4)/(3*y^2 - 4*y + 7)",
+            "log(abs(3*y^2 - 4*y + 7))",
+        ),
+        ("y", "(2*y + 1)/(y^2 + y)", "log(abs(y^2 + y))"),
+        ("y", "(4*y + 1)/(2*y^2 + y + 1)", "log(abs(2*y^2 + y + 1))"),
+        (
+            "y",
+            "(2*y + 2)/(y^2 + 2*y + 1)",
+            "log(abs(y^2 + 2*y + 1))",
+        ),
+        ("y", "exp(x)*sin(y)", "-exp(x)*cos(y)"),
+        ("y", "(x + 1)*cos(y)", "(x + 1)*sin(y)"),
+        ("x", "sin(x/y)", "-y*cos(x/y)"),
+        ("x", "cos(x/y)/y", "sin(x/y)"),
+        ("x", "exp((2*x + 1)/y)", "1/2*y*exp((2*x + 1)/y)"),
+        (
+            "x",
+            "tan((3*x - 1)/y)",
+            "-1/3*y*log(abs(cos((3*x - 1)/y)))",
+        ),
+        (
+            "x",
+            "(4*x + 5)/(2*x^2 + 5*x + 7)",
+            "log(abs(2*x^2 + 5*x + 7))",
+        ),
+        (
+            "x",
+            "(2*x - 3)/(x^2 - 3*x + 4)",
+            "log(abs(x^2 - 3*x + 4))",
+        ),
+        (
+            "x",
+            "(6*x + 4)/(3*x^2 + 4*x + 1)",
+            "log(abs(3*x^2 + 4*x + 1))",
+        ),
+        ("x", "(x + 1)/(1/2*x^2 + x)", "log(abs(1/2*x^2 + x))"),
+        ("y", "(3*y^2 + 2)*exp(y^3 + 2*y)", "exp(y^3 + 2*y)"),
+        ("y", "(3*y^2 + 2)*sin(y^3 + 2*y)", "-cos(y^3 + 2*y)"),
+        ("y", "(3*y^2 + 2)*cos(y^3 + 2*y)", "sin(y^3 + 2*y)"),
+        (
+            "y",
+            "(3*y^2 + 2)*log(y^3 + 2*y)",
+            "((y^3 + 2*y)*log(abs(y^3 + 2*y)) - (y^3 + 2*y))",
+        ),
+        ("y", "(3*y^2 + 2)*(y^3 + 2*y)^2", "1/3*(y^3 + 2*y)^3"),
+        ("y", "(3*y^2 + 2)*(y^3 + 2*y)^-2", "-1*(y^3 + 2*y)^-1"),
+        ("x", "(2*x + 1)*exp(x^2 + x)", "exp(x^2 + x)"),
+        ("x", "(2*x + 1)*sin(x^2 + x)", "-cos(x^2 + x)"),
+        ("x", "(2*x + 1)/(x^2 + x)", "log(abs(x^2 + x))"),
+        ("x", "(2*x + 1)*(x^2 + x)^3", "1/4*(x^2 + x)^4"),
+        ("y", "y^2 + 2*x*y + x^2", "1/3*y^3 + x*y^2 + x^2*y"),
+        ("x", "x^2 + 3*y*x + 2*y^2", "1/3*x^3 + 3/2*y*x^2 + 2*y^2*x"),
+        ("y", "(y + x)^-1", "log(abs(y + x))"),
+        ("x", "(x + y)^-2", "-1*(x + y)^-1"),
+        ("y", "sin(2*y + x)", "-1/2*cos(2*y + x)"),
+        ("y", "cos(3*y - x)", "1/3*sin(3*y - x)"),
+        ("x", "exp(5*x - 2*y)", "1/5*exp(5*x - 2*y)"),
+        ("x", "sin(4*x + y)", "-1/4*cos(4*x + y)"),
+        ("x", "cos(4*x + y)", "1/4*sin(4*x + y)"),
+        ("x", "tan(2*x - y)", "-1/2*log(abs(cos(2*x - y)))"),
+        ("y", "tan(3*y + x)", "-1/3*log(abs(cos(3*y + x)))"),
+    ];
+
+    assert_eq!(cases.len(), 41, "expected 41 odd cases");
+    for (var, input, expected) in cases {
+        assert_integral_with_var(var, input, expected);
     }
 }
 

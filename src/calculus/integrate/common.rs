@@ -1,95 +1,81 @@
 use crate::expr::{Expr, Rational};
-use num_traits::Zero;
+use crate::simplify::{simplify, simplify_fully};
+use num_traits::{One, Zero};
 
-#[derive(Clone, Debug)]
-enum LinearTerm {
-    Var(Rational, String),
-    Const(Rational),
-}
+use super::contains_var;
 
-/// Extract (coefficient, constant, variable) from a linear expression `a*x + b`.
-pub fn linear_parts(expr: &Expr) -> Option<(Rational, Rational, String)> {
+/// Extract (coefficient, constant) from a linear expression `a*var + b`.
+pub fn linear_parts(expr: &Expr, var: &str) -> Option<(Expr, Expr)> {
+    if !contains_var(expr, var) {
+        return Some((Expr::Constant(Rational::zero()), expr.clone()));
+    }
+
     match expr {
+        Expr::Variable(v) if v == var => Some((
+            Expr::Constant(Rational::one()),
+            Expr::Constant(Rational::zero()),
+        )),
+        Expr::Neg(inner) => {
+            let (coef, constant) = linear_parts(inner, var)?;
+            Some((
+                simplify(Expr::Neg(coef.boxed())),
+                simplify(Expr::Neg(constant.boxed())),
+            ))
+        }
         Expr::Add(a, b) => {
-            let left = as_linear_term(a)?;
-            let right = as_linear_term(b)?;
-            match (left, right) {
-                (LinearTerm::Var(coef, var), LinearTerm::Const(c)) => Some((coef, c, var)),
-                (LinearTerm::Const(c), LinearTerm::Var(coef, var)) => Some((coef, c, var)),
-                (LinearTerm::Var(c1, v1), LinearTerm::Var(c2, v2)) if v1 == v2 => {
-                    Some((c1 + c2, Rational::from_integer(0.into()), v1))
-                }
-                (LinearTerm::Const(c1), LinearTerm::Const(c2)) => {
-                    Some((Rational::from_integer(0.into()), c1 + c2, "x".into()))
-                }
-                _ => None,
-            }
+            let (ca, ka) = linear_parts(a, var)?;
+            let (cb, kb) = linear_parts(b, var)?;
+            Some((
+                simplify(Expr::Add(ca.boxed(), cb.boxed())),
+                simplify(Expr::Add(ka.boxed(), kb.boxed())),
+            ))
         }
         Expr::Sub(a, b) => {
-            let left = as_linear_term(a)?;
-            let right = as_linear_term(b)?;
-            match (left, right) {
-                (LinearTerm::Var(coef, var), LinearTerm::Const(c)) => Some((coef, -c, var)),
-                (LinearTerm::Const(c), LinearTerm::Var(coef, var)) => Some((-coef, c, var)),
-                (LinearTerm::Var(c1, v1), LinearTerm::Var(c2, v2)) if v1 == v2 => {
-                    Some((c1 - c2, Rational::from_integer(0.into()), v1))
-                }
-                (LinearTerm::Const(c1), LinearTerm::Const(c2)) => {
-                    Some((Rational::from_integer(0.into()), c1 - c2, "x".into()))
-                }
-                _ => None,
-            }
-        }
-        Expr::Neg(inner) => {
-            let (coef, constant, var) = linear_parts(inner)?;
-            Some((-coef, -constant, var))
+            let (ca, ka) = linear_parts(a, var)?;
+            let (cb, kb) = linear_parts(b, var)?;
+            Some((
+                simplify(Expr::Sub(ca.boxed(), cb.boxed())),
+                simplify(Expr::Sub(ka.boxed(), kb.boxed())),
+            ))
         }
         Expr::Mul(a, b) => {
-            const_var(a, b).map(|(coef, var)| (coef, Rational::from_integer(0.into()), var))
+            if !contains_var(a, var) {
+                let (cb, kb) = linear_parts(b, var)?;
+                Some((
+                    simplify(Expr::Mul(a.clone().boxed(), cb.boxed())),
+                    simplify(Expr::Mul(a.clone().boxed(), kb.boxed())),
+                ))
+            } else if !contains_var(b, var) {
+                let (ca, ka) = linear_parts(a, var)?;
+                Some((
+                    simplify(Expr::Mul(b.clone().boxed(), ca.boxed())),
+                    simplify(Expr::Mul(b.clone().boxed(), ka.boxed())),
+                ))
+            } else {
+                None
+            }
         }
-        Expr::Variable(v) => Some((
-            Rational::from_integer(1.into()),
-            Rational::from_integer(0.into()),
-            v.clone(),
-        )),
-        Expr::Constant(c) => Some((Rational::from_integer(0.into()), c.clone(), "x".into())),
+        Expr::Div(a, b) if !contains_var(b, var) => {
+            let (ca, ka) = linear_parts(a, var)?;
+            Some((
+                simplify(Expr::Div(ca.boxed(), b.clone().boxed())),
+                simplify(Expr::Div(ka.boxed(), b.clone().boxed())),
+            ))
+        }
         _ => None,
     }
 }
 
 /// Return the coefficient k in a linear term k*var (or var) if the expression is linear in `var`.
-pub fn coeff_of_var(expr: &Expr, var: &str) -> Option<Rational> {
-    if let Some((coef, _, v)) = linear_parts(expr) {
-        if v == var && !coef.is_zero() {
-            return Some(coef);
-        }
-    }
-    None
-}
-
-fn as_linear_term(expr: &Expr) -> Option<LinearTerm> {
-    if let Some((coef, var)) = mul_const_var(expr) {
-        return Some(LinearTerm::Var(coef, var));
-    }
-    match expr {
-        Expr::Variable(v) => Some(LinearTerm::Var(Rational::from_integer(1.into()), v.clone())),
-        Expr::Constant(c) => Some(LinearTerm::Const(c.clone())),
-        _ => None,
-    }
-}
-
-fn mul_const_var(expr: &Expr) -> Option<(Rational, String)> {
-    if let Expr::Mul(a, b) = expr {
-        const_var(a, b)
-    } else {
+pub fn coeff_of_var(expr: &Expr, var: &str) -> Option<Expr> {
+    let (coef, _) = linear_parts(expr, var)?;
+    if is_zero_expr(&coef) {
         None
+    } else {
+        Some(coef)
     }
 }
 
-fn const_var(a: &Expr, b: &Expr) -> Option<(Rational, String)> {
-    match (a, b) {
-        (Expr::Constant(c), Expr::Variable(v)) => Some((c.clone(), v.clone())),
-        (Expr::Variable(v), Expr::Constant(c)) => Some((c.clone(), v.clone())),
-        _ => None,
-    }
+fn is_zero_expr(expr: &Expr) -> bool {
+    matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_zero())
 }

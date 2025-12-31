@@ -5,7 +5,7 @@ use crate::simplify::simplify;
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
-use super::{contains_var, log_abs};
+use super::{contains_var, linear_parts, log_abs};
 
 pub fn is_polynomial(expr: &Expr, var: &str) -> bool {
     matches!(detect_form(expr, var), Some(_))
@@ -268,67 +268,6 @@ fn extract_rational(expr: &Expr) -> Option<Rational> {
             Expr::Constant(n) => Some(-n.clone()),
             _ => None,
         },
-        _ => None,
-    }
-}
-
-fn linear_parts(expr: &Expr, var: &str) -> Option<(Expr, Expr)> {
-    if !contains_var(expr, var) {
-        return Some((Expr::Constant(Rational::zero()), expr.clone()));
-    }
-
-    match expr {
-        Expr::Variable(v) if v == var => Some((
-            Expr::Constant(Rational::one()),
-            Expr::Constant(Rational::zero()),
-        )),
-        Expr::Neg(inner) => {
-            let (coef, constant) = linear_parts(inner, var)?;
-            Some((
-                simplify(Expr::Neg(coef.boxed())),
-                simplify(Expr::Neg(constant.boxed())),
-            ))
-        }
-        Expr::Add(a, b) => {
-            let (ca, ka) = linear_parts(a, var)?;
-            let (cb, kb) = linear_parts(b, var)?;
-            Some((
-                simplify(Expr::Add(ca.boxed(), cb.boxed())),
-                simplify(Expr::Add(ka.boxed(), kb.boxed())),
-            ))
-        }
-        Expr::Sub(a, b) => {
-            let (ca, ka) = linear_parts(a, var)?;
-            let (cb, kb) = linear_parts(b, var)?;
-            Some((
-                simplify(Expr::Sub(ca.boxed(), cb.boxed())),
-                simplify(Expr::Sub(ka.boxed(), kb.boxed())),
-            ))
-        }
-        Expr::Mul(a, b) => {
-            if !contains_var(a, var) {
-                let (cb, kb) = linear_parts(b, var)?;
-                Some((
-                    simplify(Expr::Mul(a.clone().boxed(), cb.boxed())),
-                    simplify(Expr::Mul(a.clone().boxed(), kb.boxed())),
-                ))
-            } else if !contains_var(b, var) {
-                let (ca, ka) = linear_parts(a, var)?;
-                Some((
-                    simplify(Expr::Mul(b.clone().boxed(), ca.boxed())),
-                    simplify(Expr::Mul(b.clone().boxed(), ka.boxed())),
-                ))
-            } else {
-                None
-            }
-        }
-        Expr::Div(a, b) if !contains_var(b, var) => {
-            let (ca, ka) = linear_parts(a, var)?;
-            Some((
-                simplify(Expr::Div(ca.boxed(), b.clone().boxed())),
-                simplify(Expr::Div(ka.boxed(), b.clone().boxed())),
-            ))
-        }
         _ => None,
     }
 }
