@@ -91,7 +91,7 @@ pub enum IntegrationResult {
 
 pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     let mut attempts = Vec::new();
-    let mut kind = classify_integrand(expr);
+    let mut kind = classify_integrand(expr, var);
 
     // If the chosen variable does not occur, treat the expression as a constant.
     if !contains_var(expr, var) {
@@ -226,7 +226,7 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             },
         };
     } else {
-        let status = if is_rational_like(expr) {
+        let status = if is_rational_like(expr, var) {
             AttemptStatus::Failed(ReasonCode::NonRational)
         } else {
             AttemptStatus::NotApplicable
@@ -276,7 +276,11 @@ fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
         Expr::Mul(a, b) => match (&**a, &**b) {
             (Expr::Constant(c), other) | (other, Expr::Constant(c)) => integrate_direct(other, var)
                 .map(|r| Expr::Mul(Expr::Constant(c.clone()).boxed(), r.boxed())),
-            _ => None,
+            _ => polynomial::integrate(expr, var)
+                .or_else(|| rational::integrate(expr, var))
+                .or_else(|| trig::integrate(expr, var))
+                .or_else(|| exponential::integrate(expr, var))
+                .or_else(|| logarithmic::integrate(expr, var)),
         },
         _ => polynomial::integrate(expr, var)
             .or_else(|| rational::integrate(expr, var))
@@ -397,10 +401,10 @@ fn constant_multiple(expr: &Expr, target: &Expr) -> Option<Rational> {
 
 fn integration_by_parts(expr: &Expr, var: &str) -> Option<Expr> {
     if let Expr::Mul(a, b) = expr {
-        if polynomial::is_polynomial(a) {
+        if polynomial::is_polynomial(a, var) {
             return integrate_parts(a, b, var);
         }
-        if polynomial::is_polynomial(b) {
+        if polynomial::is_polynomial(b, var) {
             return integrate_parts(b, a, var);
         }
     }
@@ -418,24 +422,24 @@ fn integrate_parts(u: &Expr, dv: &Expr, var: &str) -> Option<Expr> {
     )))
 }
 
-fn integrate_partial_fractions(expr: &Expr, _var: &str) -> Option<Expr> {
-    if !is_rational_like(expr) {
+fn integrate_partial_fractions(expr: &Expr, var: &str) -> Option<Expr> {
+    if !is_rational_like(expr, var) {
         return None;
     }
-    rational::integrate(expr, _var)
+    rational::integrate(expr, var)
 }
 
-fn classify_integrand(expr: &Expr) -> IntegrandKind {
+fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
     if let Some(non_elem) = detect_non_elementary(expr) {
         return IntegrandKind::NonElementary(non_elem);
     }
-    if polynomial::is_polynomial(expr) {
+    if polynomial::is_polynomial(expr, var) {
         return IntegrandKind::Polynomial;
     }
     if rational::is_rational(expr) {
         return IntegrandKind::Rational { linear: true };
     }
-    if is_rational_like(expr) {
+    if is_rational_like(expr, var) {
         return IntegrandKind::Rational { linear: false };
     }
     if trig::is_trig(expr) {
@@ -449,8 +453,8 @@ fn classify_integrand(expr: &Expr) -> IntegrandKind {
     }
     match expr {
         Expr::Mul(a, b) => IntegrandKind::Product(
-            Box::new(classify_integrand(a)),
-            Box::new(classify_integrand(b)),
+            Box::new(classify_integrand(a, var)),
+            Box::new(classify_integrand(b, var)),
         ),
         Expr::Add(_, _) | Expr::Sub(_, _) => IntegrandKind::Sum,
         _ => IntegrandKind::Unknown,
@@ -521,9 +525,11 @@ fn polynomial_degree(expr: &Expr) -> Option<usize> {
     }
 }
 
-fn is_rational_like(expr: &Expr) -> bool {
+fn is_rational_like(expr: &Expr, var: &str) -> bool {
     match expr {
-        Expr::Div(num, den) => polynomial::is_polynomial(num) && polynomial::is_polynomial(den),
+        Expr::Div(num, den) => {
+            polynomial::is_polynomial(num, var) && polynomial::is_polynomial(den, var)
+        }
         _ => false,
     }
 }
@@ -552,7 +558,7 @@ fn default_reason(kind: &IntegrandKind) -> ReasonCode {
     }
 }
 
-fn contains_var(expr: &Expr, var: &str) -> bool {
+pub(crate) fn contains_var(expr: &Expr, var: &str) -> bool {
     match expr {
         Expr::Variable(v) => v == var,
         Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Pow(a, b) => {
