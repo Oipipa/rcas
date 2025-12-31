@@ -238,6 +238,36 @@ fn substitution_and_parts_heuristics() {
 }
 
 #[test]
+fn partial_fraction_linear_denominators() {
+    let cases = vec![
+        ("x/(x^2 - 1)", "1/2*log(x - 1) + 1/2*log(x + 1)"),
+        ("1/((x-1)*(x-2))", "log(x - 2) - log(x - 1)"),
+        ("1/(x-1)^2", "-1*(x - 1)^-1"),
+        ("(2*x + 3)/(x + 1)^2", "2*log(x + 1) - (x + 1)^-1"),
+        ("x^2/(x-1)", "1/2*x^2 + x + log(x - 1)"),
+    ];
+
+    for (input, expected) in cases {
+        let expr = parse_expr(input).expect("parse rational");
+        let res = integrate("x", &expr);
+        match res {
+            IntegrationResult::Integrated { result, report } => {
+                assert_eq!(
+                    simplify_fully(result),
+                    simplify_parse(expected),
+                    "partial fraction integral for {input}"
+                );
+                assert!(
+                    matches!(report.kind, IntegrandKind::Rational { .. }),
+                    "kind should be rational for {input}"
+                );
+            }
+            other => panic!("expected integration for {input}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn flags_non_elementary_inputs() {
     let exp_square = parse_expr("exp(x^2)").expect("parse exp square");
     let res = integrate("x", &exp_square);

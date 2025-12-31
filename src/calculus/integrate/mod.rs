@@ -436,7 +436,7 @@ fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
     if polynomial::is_polynomial(expr, var) {
         return IntegrandKind::Polynomial;
     }
-    if rational::is_rational(expr) {
+    if rational::is_rational(expr, var) {
         return IntegrandKind::Rational { linear: true };
     }
     if is_rational_like(expr, var) {
