@@ -42,9 +42,24 @@ fn integrate_exp_trig_product(expr: &Expr, var: &str) -> Option<Expr> {
 
     for f in var_factors {
         match f {
-            Expr::Exp(arg) => exp_arg = Some(*arg),
-            Expr::Sin(arg) => trig = Some((true, *arg)),
-            Expr::Cos(arg) => trig = Some((false, *arg)),
+            Expr::Exp(arg) => {
+                if exp_arg.is_some() {
+                    return None;
+                }
+                exp_arg = Some(*arg);
+            }
+            Expr::Sin(arg) => {
+                if trig.is_some() {
+                    return None;
+                }
+                trig = Some((true, *arg));
+            }
+            Expr::Cos(arg) => {
+                if trig.is_some() {
+                    return None;
+                }
+                trig = Some((false, *arg));
+            }
             _ => return None,
         }
     }

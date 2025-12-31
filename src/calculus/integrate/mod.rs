@@ -8,12 +8,11 @@ mod trig;
 
 use crate::calculus::differentiate;
 use crate::expr::{Expr, Rational};
+use crate::factor::Poly;
 use crate::format::expr::pretty;
 use crate::simplify::{normalize, simplify, simplify_fully};
-use num_bigint::BigInt;
-use num_traits::{One, ToPrimitive, Zero};
+use num_traits::{One, Zero};
 use std::collections::HashMap;
-use std::f64::consts::PI;
 
 pub(crate) use common::{coeff_of_var, linear_parts};
 pub use exponential::is_exp;
@@ -677,7 +676,96 @@ fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
     if contains_other_vars(expr, var) || contains_other_vars(target, var) {
         return None;
     }
-    numeric_constant_ratio(expr, target, var).map(Expr::Constant)
+    rational_constant_ratio(expr, target, var)
+}
+
+fn rational_constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
+    let (expr_num, expr_den) = as_rational_polys(expr, var)?;
+    let (target_num, target_den) = as_rational_polys(target, var)?;
+
+    if target_num.is_zero() {
+        return None;
+    }
+
+    let numerator = expr_num * target_den;
+    let denominator = expr_den * target_num;
+    if denominator.is_zero() {
+        return None;
+    }
+
+    if numerator.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+
+    let numerator_deg = numerator.degree()?;
+    let denominator_deg = denominator.degree()?;
+    if numerator_deg != denominator_deg {
+        return None;
+    }
+
+    let scale = numerator.leading_coeff() / denominator.leading_coeff();
+    if numerator == denominator.scale(&scale) {
+        Some(Expr::Constant(scale))
+    } else {
+        None
+    }
+}
+
+fn as_rational_polys(expr: &Expr, var: &str) -> Option<(Poly, Poly)> {
+    let (num_expr, den_expr) = as_rational_expr(expr);
+    let num_poly = Poly::from_expr(&num_expr, var)?;
+    let den_poly = Poly::from_expr(&den_expr, var)?;
+    if den_poly.is_zero() {
+        return None;
+    }
+    Some((num_poly, den_poly))
+}
+
+fn as_rational_expr(expr: &Expr) -> (Expr, Expr) {
+    let (const_factor, factors) = flatten_product(expr);
+    if const_factor.is_zero() {
+        return (
+            Expr::Constant(Rational::zero()),
+            Expr::Constant(Rational::one()),
+        );
+    }
+
+    let mut num_factors = Vec::new();
+    let mut den_factors = Vec::new();
+
+    for factor in factors {
+        match factor {
+            Expr::Pow(base, exp) => match &*exp {
+                Expr::Constant(k) if k < &Rational::zero() => {
+                    den_factors.push(Expr::Pow(
+                        base.clone().boxed(),
+                        Expr::Constant(-k.clone()).boxed(),
+                    ));
+                }
+                Expr::Neg(inner) if matches!(**inner, Expr::Constant(_)) => {
+                    if let Expr::Constant(k) = &**inner {
+                        den_factors.push(Expr::Pow(
+                            base.clone().boxed(),
+                            Expr::Constant(k.clone()).boxed(),
+                        ));
+                    } else {
+                        num_factors.push(Expr::Pow(base.clone(), exp.clone()));
+                    }
+                }
+                _ => num_factors.push(Expr::Pow(base.clone(), exp.clone())),
+            },
+            other => num_factors.push(other),
+        }
+    }
+
+    let numerator = rebuild_product(const_factor, num_factors);
+    let denominator = if den_factors.is_empty() {
+        Expr::Constant(Rational::one())
+    } else {
+        rebuild_product(Rational::one(), den_factors)
+    };
+
+    (numerator, denominator)
 }
 
 pub(crate) fn log_abs(expr: Expr) -> Expr {
@@ -932,91 +1020,6 @@ fn inner_candidate(expr: &Expr) -> Option<&Expr> {
         },
         _ => None,
     }
-}
-
-fn eval_expr_numeric(expr: &Expr, var: &str, x: f64) -> Option<f64> {
-    match expr {
-        Expr::Constant(c) => c.to_f64(),
-        Expr::Variable(v) => {
-            if v == var {
-                Some(x)
-            } else {
-                Some(1.0)
-            }
-        }
-        Expr::Add(a, b) => Some(eval_expr_numeric(a, var, x)? + eval_expr_numeric(b, var, x)?),
-        Expr::Sub(a, b) => Some(eval_expr_numeric(a, var, x)? - eval_expr_numeric(b, var, x)?),
-        Expr::Mul(a, b) => Some(eval_expr_numeric(a, var, x)? * eval_expr_numeric(b, var, x)?),
-        Expr::Div(a, b) => {
-            let denom = eval_expr_numeric(b, var, x)?;
-            if denom.abs() < 1e-9 {
-                None
-            } else {
-                Some(eval_expr_numeric(a, var, x)? / denom)
-            }
-        }
-        Expr::Pow(base, exp) => {
-            let b = eval_expr_numeric(base, var, x)?;
-            match &**exp {
-                Expr::Constant(c) => Some(b.powf(c.to_f64()?)),
-                _ => None,
-            }
-        }
-        Expr::Neg(inner) => eval_expr_numeric(inner, var, x).map(|v| -v),
-        Expr::Sin(inner) => eval_expr_numeric(inner, var, x).map(f64::sin),
-        Expr::Cos(inner) => eval_expr_numeric(inner, var, x).map(f64::cos),
-        Expr::Tan(inner) => eval_expr_numeric(inner, var, x).map(f64::tan),
-        Expr::Atan(inner) => eval_expr_numeric(inner, var, x).map(f64::atan),
-        Expr::Asin(inner) => eval_expr_numeric(inner, var, x).map(f64::asin),
-        Expr::Acos(inner) => eval_expr_numeric(inner, var, x).map(f64::acos),
-        Expr::Exp(inner) => eval_expr_numeric(inner, var, x).map(f64::exp),
-        Expr::Log(inner) => {
-            let v = eval_expr_numeric(inner, var, x)?;
-            if v.abs() < 1e-9 {
-                None
-            } else {
-                Some(v.abs().ln())
-            }
-        }
-        Expr::Abs(inner) => eval_expr_numeric(inner, var, x).map(f64::abs),
-    }
-}
-
-fn numeric_constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Rational> {
-    let samples = [-2.5, -1.0, -0.5, 0.5, 1.0, 2.0, PI / 3.0];
-    let mut ratio: Option<f64> = None;
-    for s in samples {
-        let t_val = eval_expr_numeric(target, var, s)?;
-        if t_val.abs() < 1e-9 {
-            continue;
-        }
-        let e_val = eval_expr_numeric(expr, var, s)?;
-        let r = e_val / t_val;
-        if let Some(prev) = ratio {
-            if (r - prev).abs() > 1e-6 {
-                return None;
-            }
-        } else {
-            ratio = Some(r);
-        }
-    }
-
-    ratio.and_then(approximate_rational)
-}
-
-fn approximate_rational(val: f64) -> Option<Rational> {
-    if !val.is_finite() {
-        return None;
-    }
-    let max_den: i64 = 512;
-    for den in 1..=max_den {
-        let num = (val * den as f64).round();
-        let approx = Rational::new(BigInt::from(num as i64), BigInt::from(den));
-        if (approx.to_f64()? - val).abs() < 1e-9 {
-            return Some(approx);
-        }
-    }
-    Rational::from_float(val)
 }
 
 #[cfg(test)]

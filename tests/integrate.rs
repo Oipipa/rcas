@@ -623,6 +623,39 @@ fn substitution_and_parts_heuristics() {
 }
 
 #[test]
+fn exp_trig_product_rejects_extra_factors() {
+    let expr = parse_expr("exp(x)*sin(x)*cos(x)").expect("parse exp trig product");
+    let report = match integrate("x", &expr) {
+        IntegrationResult::Integrated { report, .. } => report,
+        IntegrationResult::NotIntegrable(report) => report,
+    };
+    assert!(
+        !report.attempts.iter().any(|a| {
+            a.strategy == Strategy::Direct && a.status == AttemptStatus::Succeeded
+        }),
+        "direct exp-trig shortcut should not accept exp(x)*sin(x)*cos(x)"
+    );
+}
+
+#[test]
+fn substitution_rejects_false_positive_ratio() {
+    let expr = parse_expr(
+        "sin(x) * (1 + sin(3*x) * (x + 5/2)*(x + 1)*(x + 1/2)*(x - 1/2)*(x - 1)*(x - 2))",
+    )
+    .expect("parse false-positive ratio case");
+    let report = match integrate("x", &expr) {
+        IntegrationResult::Integrated { report, .. } => report,
+        IntegrationResult::NotIntegrable(report) => report,
+    };
+    assert!(
+        !report.attempts.iter().any(|a| {
+            a.strategy == Strategy::Substitution && a.status == AttemptStatus::Succeeded
+        }),
+        "substitution should not succeed on a non-constant ratio"
+    );
+}
+
+#[test]
 fn partial_fraction_linear_denominators() {
     let cases = vec![
         (
