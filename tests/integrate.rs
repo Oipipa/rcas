@@ -423,6 +423,75 @@ fn assert_non_elementary(input: &str, expected: NonElementaryKind) {
     }
 }
 
+fn assert_risch_lite_integral(input: &str, expected: &str) {
+    let expr = parse_expr(input).expect("parse risch-lite input");
+    let expected_expr = simplify_parse(expected);
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            assert_eq!(
+                simplify_fully(result),
+                expected_expr,
+                "risch-lite integral for {input}"
+            );
+            let attempt = report
+                .attempts
+                .iter()
+                .find(|a| a.strategy == Strategy::RischLite)
+                .expect("risch-lite attempt");
+            assert_eq!(
+                attempt.status,
+                AttemptStatus::Succeeded,
+                "risch-lite should succeed for {input}"
+            );
+            let note = attempt.note.as_deref().unwrap_or("");
+            assert!(
+                note.contains("determinate"),
+                "risch-lite should report determinate for {input}"
+            );
+        }
+        other => panic!("expected integration for {input}, got {other:?}"),
+    }
+}
+
+fn assert_risch_lite_non_elementary(input: &str, expected: NonElementaryKind) {
+    let expr = parse_expr(input).expect("parse non-elementary input");
+    let expected_kind = expected.clone();
+    let expected_reason = ReasonCode::NonElementary(expected.clone());
+    match integrate("x", &expr) {
+        IntegrationResult::NotIntegrable(report) => {
+            assert_eq!(
+                report.kind,
+                IntegrandKind::NonElementary(expected_kind),
+                "non-elementary kind for {input}"
+            );
+            assert_eq!(
+                report.reason,
+                Some(expected_reason),
+                "non-elementary reason for {input}"
+            );
+            let attempt = report
+                .attempts
+                .iter()
+                .find(|a| a.strategy == Strategy::RischLite)
+                .expect("risch-lite attempt");
+            assert!(
+                matches!(
+                    attempt.status,
+                    AttemptStatus::Failed(ReasonCode::NonElementary(ref kind))
+                        if kind == &expected
+                ),
+                "risch-lite should record non-elementary for {input}"
+            );
+            let note = attempt.note.as_deref().unwrap_or("");
+            assert!(
+                note.contains("determinate"),
+                "risch-lite should report determinate for {input}"
+            );
+        }
+        other => panic!("expected non-elementary classification for {input}, got {other:?}"),
+    }
+}
+
 #[test]
 fn integrates_polynomial_and_rational() {
     let poly = parse_expr("x^3").expect("parse poly");
@@ -1076,6 +1145,159 @@ fn rational_nontrivial_suite() {
 
     for (input, samples) in roundtrip_cases {
         assert_rational_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn risch_lite_trivial_suite() {
+    let cases = vec![
+        (
+            "1/(1+exp(x))",
+            "log(abs(exp(x))) - log(abs(exp(x) + 1))",
+        ),
+        (
+            "1/(2+exp(x))",
+            "1/2*log(abs(exp(x))) - 1/2*log(abs(exp(x) + 2))",
+        ),
+        (
+            "1/(3+exp(x))",
+            "1/3*log(abs(exp(x))) - 1/3*log(abs(exp(x) + 3))",
+        ),
+        (
+            "(exp(x)+1)/(exp(x)+2)",
+            "1/2*log(abs(exp(x))) + 1/2*log(abs(exp(x) + 2))",
+        ),
+        (
+            "(exp(x)+2)/(exp(x)+1)",
+            "2*log(abs(exp(x))) - log(abs(exp(x) + 1))",
+        ),
+        (
+            "exp(x)^2/(1+exp(x))",
+            "exp(x) - log(abs(exp(x) + 1))",
+        ),
+        (
+            "exp(x)^3/(1+exp(x))",
+            "1/2*exp(x)^2 - exp(x) + log(abs(exp(x) + 1))",
+        ),
+        (
+            "1/(1+exp(2*x))",
+            "1/2*log(abs(exp(2*x))) - 1/2*log(abs(exp(2*x) + 1))",
+        ),
+        (
+            "1/(2+exp(2*x))",
+            "1/4*log(abs(exp(2*x))) - 1/4*log(abs(exp(2*x) + 2))",
+        ),
+        (
+            "(exp(2*x)+1)/(exp(2*x)+2)",
+            "1/4*log(abs(exp(2*x))) + 1/4*log(abs(exp(2*x) + 2))",
+        ),
+        (
+            "1/(x*(1+exp(log(x))))",
+            "log(abs(exp(log(x)))) - log(abs(exp(log(x)) + 1))",
+        ),
+        (
+            "exp(log(x))^2/(x*(1+exp(log(x))))",
+            "exp(log(x)) - log(abs(exp(log(x)) + 1))",
+        ),
+        ("(log(x) + 1)/x", "1/2*log(x)^2 + log(x)"),
+        ("(2*log(x) + 3)/x", "log(x)^2 + 3*log(x)"),
+        (
+            "(log(x)^2 + log(x))/x",
+            "1/3*log(x)^3 + 1/2*log(x)^2",
+        ),
+        (
+            "(log(x)^2 + 2*log(x) + 1)/x",
+            "1/3*log(x)^3 + log(x)^2 + log(x)",
+        ),
+        (
+            "(log(x)^3 + log(x))/x",
+            "1/4*log(x)^4 + 1/2*log(x)^2",
+        ),
+        (
+            "((log(x) + 1)*(log(x) + 2))/x",
+            "1/3*log(x)^3 + 3/2*log(x)^2 + 2*log(x)",
+        ),
+        (
+            "((log(x) - 1)*(log(x) + 2))/x",
+            "1/3*log(x)^3 + 1/2*log(x)^2 - 2*log(x)",
+        ),
+        (
+            "(log(x)^2 + 5)/x",
+            "1/3*log(x)^3 + 5*log(x)",
+        ),
+        (
+            "(3*log(x)^2 - 2*log(x) + 4)/x",
+            "log(x)^3 - log(x)^2 + 4*log(x)",
+        ),
+        (
+            "(log(x)^4 + log(x)^2)/x",
+            "1/5*log(x)^5 + 1/3*log(x)^3",
+        ),
+        (
+            "2*(log(2*x+1) + 1)/(2*x+1)",
+            "1/2*log(2*x + 1)^2 + log(2*x + 1)",
+        ),
+        (
+            "3*(log(3*x-2) + 2)/(3*x-2)",
+            "1/2*log(3*x - 2)^2 + 2*log(3*x - 2)",
+        ),
+        (
+            "(log(4*x+1)^2 + log(4*x+1) + 1) * 4/(4*x+1)",
+            "1/3*log(4*x + 1)^3 + 1/2*log(4*x + 1)^2 + log(4*x + 1)",
+        ),
+    ];
+
+    assert_eq!(cases.len(), 25, "expected 25 trivial risch-lite cases");
+    for (input, expected) in cases {
+        assert_risch_lite_integral(input, expected);
+    }
+}
+
+#[test]
+fn risch_lite_non_elementary_suite() {
+    let cases = vec![
+        ("exp(x^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(x^2 + 2*x + 1)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(2*x^3 + 1)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x+1)^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((2*x-3)^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(x^4 - x^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp((x-1)*(x+2))", NonElementaryKind::ExpOfPolynomial),
+        ("2*exp(x^3)", NonElementaryKind::ExpOfPolynomial),
+        ("y*exp(x^2)", NonElementaryKind::ExpOfPolynomial),
+        ("exp(3*x^5 + 2*x)", NonElementaryKind::ExpOfPolynomial),
+        ("sin(x)/x", NonElementaryKind::TrigOverArgument),
+        ("cos(x)/x", NonElementaryKind::TrigOverArgument),
+        ("sin(2*x)/(2*x)", NonElementaryKind::TrigOverArgument),
+        ("cos(3*x-1)/(3*x-1)", NonElementaryKind::TrigOverArgument),
+        (
+            "sin(x^2)/x^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "cos(x^2)/x^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "sin((x+1)^2)/(x+1)^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        (
+            "cos((2*x-1)^2)/(2*x-1)^2",
+            NonElementaryKind::TrigOverPolynomialArgument,
+        ),
+        ("x^x", NonElementaryKind::PowerSelf),
+        ("2*x^x", NonElementaryKind::PowerSelf),
+        ("x^x/3", NonElementaryKind::PowerSelf),
+        ("y*x^x", NonElementaryKind::PowerSelf),
+        ("x^x*log(x)", NonElementaryKind::PowerSelfLog),
+        ("2*x^x*log(x)", NonElementaryKind::PowerSelfLog),
+        ("x^x*log(x)/3", NonElementaryKind::PowerSelfLog),
+    ];
+
+    assert_eq!(cases.len(), 25, "expected 25 non-trivial risch-lite cases");
+    for (input, expected) in cases {
+        assert_risch_lite_non_elementary(input, expected);
     }
 }
 

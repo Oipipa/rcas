@@ -3,6 +3,7 @@ mod exponential;
 mod logarithmic;
 mod polynomial;
 mod rational;
+mod risch_lite;
 mod trig;
 
 use crate::calculus::differentiate;
@@ -183,11 +184,44 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             status: AttemptStatus::Failed(reason.clone()),
             note: None,
         });
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::RischLite,
-            status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("risch-lite")),
-            note: None,
-        });
+        let mut risch_outcome = risch_lite::analyze(expr, var);
+        if matches!(risch_outcome, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
+            let retry = risch_lite::analyze(&original_expr, var);
+            if !matches!(retry, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
+                risch_outcome = retry;
+            }
+        }
+        match risch_outcome {
+            risch_lite::RischLiteOutcome::Integrated { result, note } => {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::RischLite,
+                    status: AttemptStatus::Succeeded,
+                    note: Some(note),
+                });
+                return IntegrationResult::Integrated {
+                    result: simplify(result),
+                    report: IntegrandReport {
+                        kind,
+                        reason: None,
+                        attempts,
+                    },
+                };
+            }
+            risch_lite::RischLiteOutcome::NonElementary { kind, note } => {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::RischLite,
+                    status: AttemptStatus::Failed(ReasonCode::NonElementary(kind)),
+                    note: Some(note),
+                });
+            }
+            risch_lite::RischLiteOutcome::Indeterminate { note } => {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::RischLite,
+                    status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
+                    note: Some(note),
+                });
+            }
+        }
         attempts.push(IntegrationAttempt {
             strategy: Strategy::MeijerG,
             status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("meijer-g expansion")),
@@ -315,19 +349,56 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         });
     }
 
-    // Future hooks.
-    attempts.push(IntegrationAttempt {
-        strategy: Strategy::RischLite,
-        status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("risch-lite")),
-        note: None,
-    });
+    let mut risch_non_elem: Option<NonElementaryKind> = None;
+    let mut risch_outcome = risch_lite::analyze(expr, var);
+    if matches!(risch_outcome, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
+        let retry = risch_lite::analyze(&original_expr, var);
+        if !matches!(retry, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
+            risch_outcome = retry;
+        }
+    }
+    match risch_outcome {
+        risch_lite::RischLiteOutcome::Integrated { result, note } => {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::RischLite,
+                status: AttemptStatus::Succeeded,
+                note: Some(note),
+            });
+            return IntegrationResult::Integrated {
+                result: simplify(result),
+                report: IntegrandReport {
+                    kind,
+                    reason: None,
+                    attempts,
+                },
+            };
+        }
+        risch_lite::RischLiteOutcome::NonElementary { kind: ne_kind, note } => {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::RischLite,
+                status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind.clone())),
+                note: Some(note),
+            });
+            if !matches!(kind, IntegrandKind::NonElementary(_)) {
+                kind = IntegrandKind::NonElementary(ne_kind.clone());
+            }
+            risch_non_elem = Some(ne_kind);
+        }
+        risch_lite::RischLiteOutcome::Indeterminate { note } => {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::RischLite,
+                status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
+                note: Some(note),
+            });
+        }
+    }
     attempts.push(IntegrationAttempt {
         strategy: Strategy::MeijerG,
         status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("meijer-g expansion")),
         note: None,
     });
 
-    let reason = Some(match non_elem {
+    let reason = Some(match non_elem.or(risch_non_elem) {
         Some(non_elem) => ReasonCode::NonElementary(non_elem),
         None => default_reason(&kind),
     });
