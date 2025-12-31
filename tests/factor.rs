@@ -287,3 +287,56 @@ fn nontrivial_factorizations() {
         assert_factorization(input, constant, &factors);
     }
 }
+
+#[test]
+fn irreducible_polynomials() {
+    let cases: Vec<(&str, Rational, Vec<(&str, usize)>)> = vec![
+        ("x^2 + 1", rational_const(1), vec![("x^2 + 1", 1)]),
+        ("x^2 + x + 1", rational_const(1), vec![("x^2 + x + 1", 1)]),
+        ("x^3 + x + 1", rational_const(1), vec![("x^3 + x + 1", 1)]),
+        ("x^4 + x + 1", rational_const(1), vec![("x^4 + x + 1", 1)]),
+        ("x^5 + x^2 + 1", rational_const(1), vec![("x^5 + x^2 + 1", 1)]),
+        ("x^6 + x + 1", rational_const(1), vec![("x^6 + x + 1", 1)]),
+    ];
+
+    assert_eq!(cases.len(), 6);
+    for (input, constant, factors) in cases {
+        assert_factorization(input, constant, &factors);
+    }
+}
+
+#[test]
+fn higher_degree_reducible_cases() {
+    let cases: Vec<(&str, Rational, Vec<(&str, usize)>)> = vec![
+        (
+            "x^4 + x^2 + 1",
+            rational_const(1),
+            vec![("x^2 + x + 1", 1), ("x^2 - x + 1", 1)],
+        ),
+        (
+            "x^4 + 2*x^3 + 3*x^2 + 2*x + 1",
+            rational_const(1),
+            vec![("x^2 + x + 1", 2)],
+        ),
+        (
+            "x^5 + 2*x^3 + x^2 + x + 1",
+            rational_const(1),
+            vec![("x^2 + 1", 1), ("x^3 + x + 1", 1)],
+        ),
+        (
+            "x^6 + x^5 + x^4 + 3*x^3 + x^2 + x + 1",
+            rational_const(1),
+            vec![("x^3 + x + 1", 1), ("x^3 + x^2 + 1", 1)],
+        ),
+        (
+            "1/2*x^2 + 1/2*x + 1/8",
+            Rational::new(1.into(), 2.into()),
+            vec![("x + 1/2", 2)],
+        ),
+    ];
+
+    assert_eq!(cases.len(), 5);
+    for (input, constant, factors) in cases {
+        assert_factorization(input, constant, &factors);
+    }
+}

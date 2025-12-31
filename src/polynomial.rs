@@ -520,6 +520,37 @@ impl Polynomial<Rational> {
         }
         r0.monic()
     }
+
+    pub fn square_free_decomposition(&self) -> Vec<(Poly, usize)> {
+        if self.is_zero() || self.degree().unwrap_or(0) == 0 {
+            return Vec::new();
+        }
+
+        let mut result = Vec::new();
+        let mut i = 1;
+        let mut g = Poly::gcd(self, &self.derivative());
+        let mut y = self.div_exact(&g).unwrap_or_else(Poly::zero);
+
+        while !y.is_one() {
+            let z = Poly::gcd(&y, &g);
+            let factor = y.div_exact(&z).unwrap_or_else(Poly::zero);
+            if !factor.is_one() {
+                result.push((factor, i));
+            }
+            y = z.clone();
+            g = g.div_exact(&z).unwrap_or_else(Poly::zero);
+            i += 1;
+        }
+
+        if !g.is_one() {
+            let g_sqrt = g.square_free_decomposition();
+            for (part, mult) in g_sqrt {
+                result.push((part, mult + i - 1));
+            }
+        }
+
+        result
+    }
 }
 
 impl Polynomial<Expr> {
