@@ -105,7 +105,7 @@ pub enum IntegrationResult {
 }
 
 pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
-    if !contains_var(expr, var) {
+    if is_constant_wrt(expr, var) {
         let kind = classify_integrand(expr, var);
         return IntegrationResult::Integrated {
             result: simplify(Expr::Mul(
@@ -129,20 +129,41 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     let mut non_elem = detect_non_elementary(expr, var);
     let original_poly = polynomial::is_polynomial(&original_expr, var);
     let original_rat = rational::rational_kind(&original_expr, var);
+    let normalized_poly = polynomial::is_polynomial(&normalized, var);
+    let normalized_rat = rational::rational_kind(&normalized, var);
     let mut kind = if original_poly {
         IntegrandKind::Polynomial
     } else if let Some(linear) = original_rat {
+        IntegrandKind::Rational { linear }
+    } else if normalized_poly {
+        IntegrandKind::Polynomial
+    } else if let Some(linear) = normalized_rat {
         IntegrandKind::Rational { linear }
     } else {
         classify_integrand(&normalized, var)
     };
     let expr_owned = match kind {
-        IntegrandKind::Polynomial | IntegrandKind::Rational { .. } => original_expr.clone(),
+        IntegrandKind::Polynomial => {
+            if original_poly {
+                original_expr.clone()
+            } else {
+                normalized.clone()
+            }
+        }
+        IntegrandKind::Rational { .. } => {
+            if original_rat.is_some() {
+                original_expr.clone()
+            } else {
+                normalized.clone()
+            }
+        }
         _ => normalized.clone(),
     };
     let expr = &expr_owned;
 
-    if non_elem.is_none() {
+    if &original_expr != expr {
+        non_elem = detect_non_elementary(expr, var);
+    } else if non_elem.is_none() {
         non_elem = detect_non_elementary(expr, var);
     }
     if let Some(ref detected) = non_elem {
@@ -485,7 +506,7 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
 }
 
 fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
-    if !contains_var(expr, var) {
+    if is_constant_wrt(expr, var) {
         let with_var = Expr::Mul(
             expr.clone().boxed(),
             Expr::Variable(var.to_string()).boxed(),
@@ -547,7 +568,7 @@ fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
 }
 
 fn integrate_basic(expr: &Expr, var: &str) -> Option<Expr> {
-    if !contains_var(expr, var) {
+    if is_constant_wrt(expr, var) {
         return Some(Expr::Mul(
             expr.clone().boxed(),
             Expr::Variable(var.to_string()).boxed(),
@@ -637,7 +658,7 @@ fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
                 remaining_expr.clone().boxed(),
                 inner_derivative.clone().boxed(),
             ));
-            if !contains_var(&ratio_expr, var) {
+            if is_constant_wrt(&ratio_expr, var) {
                 Some(ratio_expr)
             } else {
                 constant_ratio(&remaining_expr, &inner_derivative, var)
@@ -661,7 +682,7 @@ fn integrate_log_derivative(expr: &Expr, var: &str) -> Option<Expr> {
     let (num, den) = as_rational_expr(expr);
     let num = simplify_fully(num);
     let den = simplify_fully(den);
-    if !contains_var(&den, var) {
+    if is_constant_wrt(&den, var) {
         return None;
     }
     let den_derivative = simplify_fully(differentiate(var, &den));
@@ -669,7 +690,7 @@ fn integrate_log_derivative(expr: &Expr, var: &str) -> Option<Expr> {
         return None;
     }
     let ratio = constant_ratio(&num, &den_derivative, var)?;
-    if contains_var(&ratio, var) {
+    if !is_constant_wrt(&ratio, var) {
         return None;
     }
     Some(simplify(Expr::Mul(ratio.boxed(), log_abs(den).boxed())))
@@ -905,10 +926,10 @@ fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
             (other, Expr::Constant(c)) if other == &target_norm => {
                 return Some(Expr::Constant(c.clone()))
             }
-            (other, expr_const) if other == &target_norm && !contains_var(expr_const, var) => {
+            (other, expr_const) if other == &target_norm && is_constant_wrt(expr_const, var) => {
                 return Some(expr_const.clone());
             }
-            (expr_const, other) if other == &target_norm && !contains_var(expr_const, var) => {
+            (expr_const, other) if other == &target_norm && is_constant_wrt(expr_const, var) => {
                 return Some(expr_const.clone());
             }
             _ => {}
@@ -921,7 +942,7 @@ fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
         return Some(ratio);
     }
     let quotient = simplify_fully(Expr::Div(expr_norm.clone().boxed(), target_norm.clone().boxed()));
-    if !contains_var(&quotient, var) {
+    if is_constant_wrt(&quotient, var) {
         return Some(quotient);
     }
     let (expr_const, mut expr_factors) = split_constant_factors(&expr_norm, var);
@@ -996,7 +1017,7 @@ fn algebraic_constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Exp
     let numerator_lc = poly_expr_leading_coeff(&numerator)?;
     let denominator_lc = poly_expr_leading_coeff(&denominator)?;
     let ratio = simplify_fully(Expr::Div(numerator_lc.boxed(), denominator_lc.boxed()));
-    if contains_var(&ratio, var) {
+    if !is_constant_wrt(&ratio, var) {
         return None;
     }
 
@@ -1181,10 +1202,10 @@ fn split_constant_factors(expr: &Expr, var: &str) -> (Expr, Vec<Expr>) {
     let mut const_factors = Vec::new();
     let mut var_factors = Vec::new();
     for factor in factors {
-        if contains_var(&factor, var) {
-            var_factors.push(factor);
-        } else {
+        if is_constant_wrt(&factor, var) {
             const_factors.push(factor);
+        } else {
+            var_factors.push(factor);
         }
     }
     (rebuild_product(const_factor, const_factors), var_factors)
@@ -1464,6 +1485,53 @@ mod substitution_internal_tests {
         assert!(
             integrate_log_derivative(&expr, "x").is_some(),
             "expected log-derivative integration with parameter coefficients"
+        );
+    }
+
+    #[test]
+    fn constant_detection_simplified_param_expressions() {
+        let cases = vec![
+            ("exp(x - x + y)", true),
+            ("log(x - x + y + 1)", true),
+            ("(x - x + 1)*(y + 2)", true),
+            ("exp(x + y)", false),
+            ("log(x + y + 1)", false),
+            ("(x^2 + y)^(1/2)", false),
+        ];
+
+        for (input, expected) in cases {
+            let expr = parse_expr(input).unwrap();
+            assert_eq!(
+                is_constant_wrt(&expr, "x"),
+                expected,
+                "is_constant_wrt for {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn constant_ratio_with_exp_parameters() {
+        let numerator = parse_expr("exp(y*x)").unwrap();
+        let target = parse_expr("exp(y*x)").unwrap();
+        let derivative = simplify_fully(differentiate("x", &target));
+        let coeff = constant_ratio(&numerator, &derivative, "x")
+            .expect("expected constant ratio for exp parameter");
+        assert_eq!(
+            simplify_fully(coeff),
+            simplify_fully(parse_expr("1/y").unwrap())
+        );
+    }
+
+    #[test]
+    fn constant_ratio_with_algebraic_parameters() {
+        let numerator = parse_expr("x*(x^2 + y)^(-1/2)").unwrap();
+        let target = parse_expr("(x^2 + y)^(1/2)").unwrap();
+        let derivative = simplify_fully(differentiate("x", &target));
+        let coeff = constant_ratio(&numerator, &derivative, "x")
+            .expect("expected constant ratio for algebraic parameter");
+        assert_eq!(
+            simplify_fully(coeff),
+            simplify_fully(parse_expr("1").unwrap())
         );
     }
 }
@@ -1768,7 +1836,7 @@ fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
 }
 
 fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
-    if !contains_var(expr, var) {
+    if is_constant_wrt(expr, var) {
         return None;
     }
 
@@ -1860,7 +1928,7 @@ fn detect_power_self_log(factors: &[Expr], var: &str) -> Option<NonElementaryKin
             saw_log = true;
             continue;
         }
-        if contains_var(factor, var) {
+        if !is_constant_wrt(factor, var) {
             return None;
         }
     }
@@ -1951,8 +2019,27 @@ fn default_reason(kind: &IntegrandKind) -> ReasonCode {
 pub(crate) fn contains_var(expr: &Expr, var: &str) -> bool {
     match expr {
         Expr::Variable(v) => v == var,
-        Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Pow(a, b) => {
-            contains_var(a, var) || contains_var(b, var)
+        Expr::Add(a, b) | Expr::Sub(a, b) => contains_var(a, var) || contains_var(b, var),
+        Expr::Mul(a, b) => {
+            if is_zero_constant(a) || is_zero_constant(b) {
+                false
+            } else {
+                contains_var(a, var) || contains_var(b, var)
+            }
+        }
+        Expr::Div(a, b) => {
+            if is_zero_constant(a) {
+                false
+            } else {
+                contains_var(a, var) || contains_var(b, var)
+            }
+        }
+        Expr::Pow(base, exp) => {
+            if is_zero_constant(exp) {
+                false
+            } else {
+                contains_var(base, var) || contains_var(exp, var)
+            }
         }
         Expr::Neg(inner)
         | Expr::Sin(inner)
@@ -1978,4 +2065,16 @@ pub(crate) fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Abs(inner) => contains_var(inner, var),
         Expr::Constant(_) => false,
     }
+}
+
+fn is_zero_constant(expr: &Expr) -> bool {
+    matches!(expr, Expr::Constant(c) if c.is_zero())
+}
+
+fn is_constant_wrt(expr: &Expr, var: &str) -> bool {
+    if !contains_var(expr, var) {
+        return true;
+    }
+    let simplified = simplify_fully(expr.clone());
+    !contains_var(&simplified, var)
 }

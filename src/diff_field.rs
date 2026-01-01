@@ -710,7 +710,7 @@ fn expr_in_field(expr: &Expr, base_var: &str, symbols: &HashSet<String>) -> bool
         return true;
     }
     match expr {
-        Expr::Variable(name) => name == base_var || symbols.contains(name),
+        Expr::Variable(_) => true,
         Expr::Constant(_) => true,
         Expr::Add(a, b)
         | Expr::Sub(a, b)

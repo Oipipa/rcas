@@ -45,13 +45,17 @@ fn canonicalization_trivial_cases() {
         ("asin(4 + x)", "asin(x + 4)"),
         ("acos(3 + x)", "acos(x + 3)"),
         ("abs(-x)", "abs(x)"),
+        ("abs(abs(x))", "abs(x)"),
         ("exp(0)", "1"),
+        ("exp(log(x))", "x"),
         ("log(1)", "0"),
+        ("log(exp(x))", "x"),
+        ("log(abs(exp(x)))", "x"),
         ("sin(0)", "0"),
         ("cos(0)", "1"),
     ];
 
-    assert_eq!(cases.len(), 30, "expected 30 trivial cases");
+    assert_eq!(cases.len(), 34, "expected 34 trivial cases");
     for (input, expected) in cases {
         expect_normalized(input, expected);
     }
@@ -136,4 +140,9 @@ fn canonicalization_nontrivial_cases() {
             "normalization should be idempotent for {input}"
         );
     }
+}
+
+#[test]
+fn fractional_nested_power_not_collapsed() {
+    expect_normalized("(x^2)^(1/2)", "(x^2)^(1/2)");
 }

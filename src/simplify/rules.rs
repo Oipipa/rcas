@@ -120,17 +120,21 @@ fn simplify_cached(expr: Expr, cache: &mut HashMap<Expr, Expr>) -> Expr {
 
         Expr::Exp(a) => match simplify_cached(*a, cache) {
             x if is_zero(&x) => one(),
+            Expr::Log(inner) => *inner,
             x => Expr::Exp(x.boxed()),
         },
 
         Expr::Log(a) => match simplify_cached(*a, cache) {
             x if is_one(&x) => zero(),
+            Expr::Exp(inner) => *inner,
             x => Expr::Log(x.boxed()),
         },
 
         Expr::Abs(a) => match simplify_cached(*a, cache) {
             Expr::Constant(c) => Expr::Constant(c.abs()),
             Expr::Neg(inner) => Expr::Abs(inner.boxed()),
+            Expr::Abs(inner) => Expr::Abs(inner.boxed()),
+            Expr::Exp(inner) => Expr::Exp(inner.boxed()),
             x => Expr::Abs(x.boxed()),
         },
 

@@ -2,7 +2,7 @@ use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 
 use crate::expr::{Expr, Rational};
-use crate::simplify::simplify;
+use crate::simplify::{simplify, simplify_fully};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -307,7 +307,8 @@ impl<C: CoeffOps> std::ops::Neg for Polynomial<C> {
 impl Polynomial<Rational> {
     pub fn from_expr(expr: &Expr, var: &str) -> Option<Self> {
         if !contains_var(expr, var) {
-            return extract_rational(expr).map(Polynomial::from_constant);
+            let simplified = simplify_fully(expr.clone());
+            return extract_rational(&simplified).map(Polynomial::from_constant);
         }
         match expr {
             Expr::Variable(v) if v == var => {
@@ -556,7 +557,7 @@ impl Polynomial<Rational> {
 impl Polynomial<Expr> {
     pub fn from_expr(expr: &Expr, var: &str) -> Option<Self> {
         if !contains_var(expr, var) {
-            return Some(Polynomial::from_constant(expr.clone()));
+            return Some(Polynomial::from_constant(simplify_fully(expr.clone())));
         }
 
         match expr {
@@ -622,8 +623,27 @@ fn extract_rational(expr: &Expr) -> Option<Rational> {
 fn contains_var(expr: &Expr, var: &str) -> bool {
     match expr {
         Expr::Variable(v) => v == var,
-        Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) | Expr::Pow(a, b) => {
-            contains_var(a, var) || contains_var(b, var)
+        Expr::Add(a, b) | Expr::Sub(a, b) => contains_var(a, var) || contains_var(b, var),
+        Expr::Mul(a, b) => {
+            if is_zero_constant(a) || is_zero_constant(b) {
+                false
+            } else {
+                contains_var(a, var) || contains_var(b, var)
+            }
+        }
+        Expr::Div(a, b) => {
+            if is_zero_constant(a) {
+                false
+            } else {
+                contains_var(a, var) || contains_var(b, var)
+            }
+        }
+        Expr::Pow(base, exp) => {
+            if is_zero_constant(exp) {
+                false
+            } else {
+                contains_var(base, var) || contains_var(exp, var)
+            }
         }
         Expr::Neg(inner)
         | Expr::Sin(inner)
@@ -649,4 +669,8 @@ fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Log(inner) => contains_var(inner, var),
         Expr::Constant(_) => false,
     }
+}
+
+fn is_zero_constant(expr: &Expr) -> bool {
+    matches!(expr, Expr::Constant(c) if Zero::is_zero(c))
 }

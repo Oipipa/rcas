@@ -134,3 +134,37 @@ fn field_algebraic_extension_roundtrip_and_derivative() {
         assert!(value < 1e-6, "algebraic derivative mismatch at {sample}: {value}");
     }
 }
+
+#[test]
+fn field_accepts_parameterized_exp_and_log() {
+    let mut tower = Tower::new("x");
+    tower
+        .push_exp(parse_expr("y*x").expect("parse exp arg"))
+        .expect("push exp");
+    let expr = parse_expr("y*exp(y*x)").expect("parse expr");
+    let elem = FieldElement::try_from_expr(&expr, &tower).expect("convert exp expr");
+    let roundtrip = tower.expand_symbols(&elem.to_expr());
+    assert_eq!(simplify_fully(roundtrip), simplify_fully(expr));
+
+    let mut tower = Tower::new("x");
+    tower
+        .push_log(parse_expr("x + y").expect("parse log arg"))
+        .expect("push log");
+    let expr = parse_expr("log(x + y)").expect("parse log expr");
+    let elem = FieldElement::try_from_expr(&expr, &tower).expect("convert log expr");
+    let roundtrip = tower.expand_symbols(&elem.to_expr());
+    assert_eq!(simplify_fully(roundtrip), simplify_fully(expr));
+}
+
+#[test]
+fn field_accepts_parameterized_algebraic_extensions() {
+    let mut tower = Tower::new("x");
+    tower
+        .push_algebraic_root(parse_expr("x^2 + y").expect("parse base"), 2)
+        .expect("push algebraic");
+
+    let expr = parse_expr("(x^2 + y)^(1/2)").expect("parse algebraic expr");
+    let elem = FieldElement::try_from_expr(&expr, &tower).expect("convert algebraic expr");
+    let roundtrip = tower.expand_symbols(&elem.to_expr());
+    assert_eq!(simplify_fully(roundtrip), simplify_fully(expr));
+}

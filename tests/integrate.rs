@@ -11,11 +11,28 @@ fn simplify_parse(input: &str) -> rcas::Expr {
 fn contains_var(expr: &Expr, var: &str) -> bool {
     match expr {
         Expr::Variable(v) => v == var,
-        Expr::Add(a, b)
-        | Expr::Sub(a, b)
-        | Expr::Mul(a, b)
-        | Expr::Div(a, b)
-        | Expr::Pow(a, b) => contains_var(a, var) || contains_var(b, var),
+        Expr::Add(a, b) | Expr::Sub(a, b) => contains_var(a, var) || contains_var(b, var),
+        Expr::Mul(a, b) => {
+            if is_zero_constant(a) || is_zero_constant(b) {
+                false
+            } else {
+                contains_var(a, var) || contains_var(b, var)
+            }
+        }
+        Expr::Div(a, b) => {
+            if is_zero_constant(a) {
+                false
+            } else {
+                contains_var(a, var) || contains_var(b, var)
+            }
+        }
+        Expr::Pow(base, exp) => {
+            if is_zero_constant(exp) {
+                false
+            } else {
+                contains_var(base, var) || contains_var(exp, var)
+            }
+        }
         Expr::Neg(inner)
         | Expr::Sin(inner)
         | Expr::Cos(inner)
@@ -40,6 +57,10 @@ fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Abs(inner) => contains_var(inner, var),
         Expr::Constant(_) => false,
     }
+}
+
+fn is_zero_constant(expr: &Expr) -> bool {
+    matches!(expr, Expr::Constant(c) if Zero::is_zero(c))
 }
 
 fn assert_polynomial_integral(input: &str, expected: &str) {
@@ -923,6 +944,54 @@ fn integrates_constants_wrt_other_var() {
 }
 
 #[test]
+fn constant_detection_parameterized_cases() {
+    let params = vec![
+        "y",
+        "y + 1",
+        "y^2 + 1",
+        "exp(y)",
+        "log(y + 1)",
+        "(y^2 + 1)^(1/2)",
+    ];
+    let templates = vec![
+        "{p}",
+        "({p}) + (x - x)",
+        "({p}) * (x - x + 1)",
+        "exp(x - x) * ({p})",
+        "({p}) / (x - x + 1)",
+        "log(x - x + ({p}) + 1)",
+    ];
+
+    let x_var = Expr::Variable("x".to_string());
+    for p in &params {
+        for template in &templates {
+            let expr_str = template.replace("{p}", p);
+            let expr = parse_expr(&expr_str).expect("parse constant case");
+            match integrate("x", &expr) {
+                IntegrationResult::Integrated { result, report } => {
+                    let expected = simplify_fully(Expr::Mul(
+                        expr.clone().boxed(),
+                        x_var.clone().boxed(),
+                    ));
+                    assert_eq!(
+                        simplify_fully(result),
+                        expected,
+                        "constant integration for {expr_str}"
+                    );
+                    assert!(
+                        report.attempts.iter().any(|a| {
+                            a.strategy == Strategy::Direct && a.status == AttemptStatus::Succeeded
+                        }),
+                        "expected direct constant handling for {expr_str}"
+                    );
+                }
+                other => panic!("expected integration for {expr_str}, got {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
 fn substitution_preserves_constants_from_other_vars() {
     let expr = parse_expr("x*sin(y)").expect("parse cross-var substitution case");
     let res = integrate("y", &expr);
@@ -1012,9 +1081,12 @@ fn odd_and_cross_variable_integrals() {
         ("y", "(3*y^2 + 2)*(y^3 + 2*y)^2", "1/3*(y^3 + 2*y)^3"),
         ("y", "(3*y^2 + 2)*(y^3 + 2*y)^-2", "-1*(y^3 + 2*y)^-1"),
         ("x", "(2*x + 1)*exp(x^2 + x)", "exp(x^2 + x)"),
+        ("x", "(2*x + y)*exp(x^2 + y*x)", "exp(x^2 + y*x)"),
         ("x", "(2*x + 1)*sin(x^2 + x)", "-cos(x^2 + x)"),
         ("x", "(2*x + 1)/(x^2 + x)", "log(abs(x^2 + x))"),
+        ("x", "2*x/(x^2 + y)", "log(abs(x^2 + y))"),
         ("x", "(2*x + 1)*(x^2 + x)^3", "1/4*(x^2 + x)^4"),
+        ("x", "x*(x^2 + y)^(-1/2)", "(x^2 + y)^(1/2)"),
         ("y", "y^2 + 2*x*y + x^2", "1/3*y^3 + x*y^2 + x^2*y"),
         ("x", "x^2 + 3*y*x + 2*y^2", "1/3*x^3 + 3/2*y*x^2 + 2*y^2*x"),
         ("y", "(y + x)^-1", "log(abs(y + x))"),
@@ -1028,9 +1100,30 @@ fn odd_and_cross_variable_integrals() {
         ("y", "tan(3*y + x)", "-1/3*log(abs(cos(3*y + x)))"),
     ];
 
-    assert_eq!(cases.len(), 42, "expected 42 odd cases");
+    assert_eq!(cases.len(), 45, "expected 45 odd cases");
     for (var, input, expected) in cases {
         assert_integral_with_var(var, input, expected);
+    }
+}
+
+#[test]
+fn simplification_sensitive_integrals() {
+    let cases = vec![
+        ("log(exp(x))", "1/2*x^2"),
+        ("exp(log(x))", "1/2*x^2"),
+        ("log(abs(exp(x)))", "1/2*x^2"),
+        (
+            "1/(x*(1+exp(log(x))))",
+            "log(abs(x)) - log(abs(x + 1))",
+        ),
+        (
+            "exp(log(x))^2/(x*(1+exp(log(x))))",
+            "x - log(abs(x + 1))",
+        ),
+    ];
+
+    for (input, expected) in cases {
+        assert_integral_expected(input, expected);
     }
 }
 
@@ -1713,14 +1806,6 @@ fn risch_lite_trivial_suite() {
             "(exp(2*x)+1)/(exp(2*x)+2)",
             "1/4*log(abs(exp(2*x))) + 1/4*log(abs(exp(2*x) + 2))",
         ),
-        (
-            "1/(x*(1+exp(log(x))))",
-            "log(abs(exp(log(x)))) - log(abs(exp(log(x)) + 1))",
-        ),
-        (
-            "exp(log(x))^2/(x*(1+exp(log(x))))",
-            "exp(log(x)) - log(abs(exp(log(x)) + 1))",
-        ),
         ("(log(x) + 1)/x", "1/2*log(x)^2 + log(x)"),
         ("(2*log(x) + 3)/x", "log(x)^2 + 3*log(x)"),
         (
@@ -1769,7 +1854,7 @@ fn risch_lite_trivial_suite() {
         ),
     ];
 
-    assert_eq!(cases.len(), 25, "expected 25 trivial risch-lite cases");
+    assert_eq!(cases.len(), 23, "expected 23 trivial risch-lite cases");
     for (input, expected) in cases {
         assert_risch_lite_integral(input, expected);
     }

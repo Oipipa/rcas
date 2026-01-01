@@ -180,13 +180,16 @@ fn normalize_pow_form(base: Expr, exp: Expr, size_limit: usize) -> Expr {
         _ => None,
     };
 
-    // Collapse nested powers: (x^a)^b => x^(a*b) when both exponents are constants.
-    if let (Expr::Pow(inner_base, inner_exp), Some(e_outer)) = (&base_norm, maybe_const_exp.clone())
-    {
-        if let Expr::Constant(e_inner) = &**inner_exp {
-            let combined = Expr::Constant(e_inner.clone() * e_outer);
-            let merged = simplify_pow((**inner_base).clone(), combined);
-            return normalize_once(merged, size_limit);
+    // Collapse nested powers only when the outer exponent is an integer to avoid branch changes.
+    if let Some(e_outer) = maybe_const_exp.clone() {
+        if e_outer.is_integer() {
+            if let Expr::Pow(inner_base, inner_exp) = &base_norm {
+                if let Expr::Constant(e_inner) = &**inner_exp {
+                    let combined = Expr::Constant(e_inner.clone() * e_outer);
+                    let merged = simplify_pow((**inner_base).clone(), combined);
+                    return normalize_once(merged, size_limit);
+                }
+            }
         }
     }
 
