@@ -1381,6 +1381,23 @@ fn risch_handles_large_exp_polynomial() {
 }
 
 #[test]
+fn risch_exp_log_tower_suite() {
+    let samples = vec![0.7, 1.3, 1.9, 2.5];
+    let cases = vec![
+        "x/exp(x)",
+        "(exp(x)+1)/(exp(x)-1)",
+        "(exp(x)^2 + 1)/(exp(x)-1)",
+        "(log(x)+1)/(x*(log(x)-1))",
+        "(x+1)*exp(x)*log(x) + exp(x)",
+    ];
+
+    assert_eq!(cases.len(), 5, "expected 5 exp/log tower cases");
+    for input in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn algebraic_quadratic_roundtrip_suite() {
     let samples = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
     let cases = vec![
@@ -1478,6 +1495,33 @@ fn algebraic_quadratic_inverse_power_suite() {
     assert_eq!(cases.len(), 25, "expected 25 inverse power cases");
     for input in cases {
         assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn algebraic_quartic_radical_odd_suite() {
+    let samples = vec![0.2, 0.6, 1.1];
+    let cases = vec![
+        "x/(x^4 + 1)^(1/2)",
+        "x*(x^4 + 1)^(1/2)",
+        "x/(x^4 + 4)^(1/2)",
+        "x*(x^4 + 4)^(1/2)",
+    ];
+
+    assert_eq!(cases.len(), 4, "expected 4 quartic radical cases");
+    for input in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn elliptic_non_elementary_cases() {
+    let cases = vec![
+        "1/(x^4 + 1)^(1/2)",
+        "x^2/(x^4 + 1)^(1/2)",
+    ];
+    for input in cases {
+        assert_non_elementary(input, NonElementaryKind::SpecialFunctionNeeded);
     }
 }
 

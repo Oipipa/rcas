@@ -1,5 +1,33 @@
+use num_traits::ToPrimitive;
 use rcas::diff_field::{FieldElement, Tower};
-use rcas::{differentiate, parse_expr, simplify_fully};
+use rcas::{differentiate, parse_expr, simplify_fully, sub};
+
+fn eval_expr_f64(expr: &rcas::Expr, var: &str, x: f64) -> f64 {
+    match expr {
+        rcas::Expr::Constant(c) => c.to_f64().expect("constant to f64"),
+        rcas::Expr::Variable(v) => {
+            if v == var {
+                x
+            } else {
+                0.0
+            }
+        }
+        rcas::Expr::Add(a, b) => eval_expr_f64(a, var, x) + eval_expr_f64(b, var, x),
+        rcas::Expr::Sub(a, b) => eval_expr_f64(a, var, x) - eval_expr_f64(b, var, x),
+        rcas::Expr::Mul(a, b) => eval_expr_f64(a, var, x) * eval_expr_f64(b, var, x),
+        rcas::Expr::Div(a, b) => eval_expr_f64(a, var, x) / eval_expr_f64(b, var, x),
+        rcas::Expr::Neg(inner) => -eval_expr_f64(inner, var, x),
+        rcas::Expr::Pow(base, exp) => {
+            let base_val = eval_expr_f64(base, var, x);
+            let exponent = match &**exp {
+                rcas::Expr::Constant(c) => c.to_f64().expect("exp to f64"),
+                _ => panic!("non-constant exponent in eval"),
+            };
+            base_val.powf(exponent)
+        }
+        other => panic!("unsupported eval in diff field test: {other:?}"),
+    }
+}
 
 #[test]
 fn field_roundtrip_with_generators() {
@@ -23,7 +51,11 @@ fn field_derivative_matches_calculus() {
     let deriv = elem.derivative().expect("differentiate element");
     let deriv_expr = tower.expand_symbols(&deriv.to_expr());
     let expected = simplify_fully(differentiate("x", &expr));
-    assert_eq!(simplify_fully(deriv_expr), expected);
+    let delta = simplify_fully(sub(deriv_expr, expected));
+    for sample in [0.1, 0.5, 1.2] {
+        let value = eval_expr_f64(&delta, "x", sample).abs();
+        assert!(value < 1e-6, "algebraic derivative mismatch at {sample}: {value}");
+    }
 }
 
 #[test]
@@ -72,4 +104,33 @@ fn field_ops_basic() {
     let g_elem = FieldElement::try_from_expr(&g_expr, &tower).expect("convert g");
     let sum = f_elem.add(&g_elem).expect("add");
     assert_eq!(simplify_fully(sum.to_expr()), simplify_fully(parse_expr("1").unwrap()));
+}
+
+#[test]
+fn field_algebraic_extension_roundtrip_and_derivative() {
+    let mut tower = Tower::new("x");
+    tower
+        .push_algebraic_root(parse_expr("x^2 + 1").expect("parse base"), 2)
+        .expect("push algebraic");
+
+    let expr = parse_expr("(x^2 + 1)^(1/2)").expect("parse algebraic expr");
+    let elem = FieldElement::try_from_expr(&expr, &tower).expect("convert to field element");
+    let roundtrip = tower.expand_symbols(&elem.to_expr());
+    assert_eq!(simplify_fully(roundtrip), simplify_fully(expr.clone()));
+
+    let squared = elem.mul(&elem).expect("multiply");
+    let squared_expr = tower.expand_symbols(&squared.to_expr());
+    assert_eq!(
+        simplify_fully(squared_expr),
+        simplify_fully(parse_expr("x^2 + 1").unwrap())
+    );
+
+    let deriv = elem.derivative().expect("differentiate element");
+    let deriv_expr = tower.expand_symbols(&deriv.to_expr());
+    let expected = simplify_fully(differentiate("x", &expr));
+    let delta = simplify_fully(sub(deriv_expr, expected));
+    for sample in [0.1, 0.5, 1.2] {
+        let value = eval_expr_f64(&delta, "x", sample).abs();
+        assert!(value < 1e-6, "algebraic derivative mismatch at {sample}: {value}");
+    }
 }

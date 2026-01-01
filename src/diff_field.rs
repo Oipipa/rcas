@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use num_bigint::BigInt;
-use num_traits::{One, ToPrimitive};
+use num_integer::Integer;
+use num_traits::{One, Signed, ToPrimitive};
 
 use crate::calculus::differentiate;
 use crate::error::{CasError, Result};
@@ -15,6 +16,15 @@ type ExprPoly = Polynomial<Expr>;
 pub enum ExtensionKind {
     Exp,
     Log,
+    Algebraic,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlgebraicExtension {
+    pub base: Expr,
+    pub base_symbol: Expr,
+    pub degree: usize,
+    pub minimal_poly: ExprPoly,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +33,7 @@ pub struct Extension {
     pub symbol: String,
     pub generator: Expr,
     pub derivative: Expr,
+    pub algebraic: Option<AlgebraicExtension>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,9 +66,25 @@ impl Tower {
         self.push_extension(ExtensionKind::Log, arg)
     }
 
+    pub fn push_algebraic_root(&mut self, base: Expr, degree: usize) -> Result<&Extension> {
+        if degree < 2 {
+            return Err(CasError::Unsupported(
+                "algebraic degree must be >= 2".to_string(),
+            ));
+        }
+        let base = simplify_fully(base);
+        let generator = Expr::Pow(
+            base.clone().boxed(),
+            Expr::Constant(
+                Rational::from_integer(1.into()) / Rational::from_integer(BigInt::from(degree)),
+            )
+            .boxed(),
+        );
+        self.push_algebraic(generator, base, degree)
+    }
+
     pub fn replace_generators(&self, expr: &Expr) -> Expr {
-        let map = self.generator_map();
-        let replaced = replace_generators_inner(expr, &map);
+        let replaced = replace_generators_inner(expr, self);
         simplify_fully(replaced)
     }
 
@@ -81,6 +108,10 @@ impl Tower {
             .unwrap_or_else(one)
     }
 
+    fn top_algebraic(&self) -> Option<&AlgebraicExtension> {
+        self.extensions.last().and_then(|ext| ext.algebraic.as_ref())
+    }
+
     pub fn expr_in_field(&self, expr: &Expr) -> bool {
         let symbols = self.symbol_set();
         expr_in_field(expr, &self.base_var, &symbols)
@@ -98,6 +129,11 @@ impl Tower {
         let generator = match kind {
             ExtensionKind::Exp => Expr::Exp(arg.clone().boxed()),
             ExtensionKind::Log => Expr::Log(arg.clone().boxed()),
+            ExtensionKind::Algebraic => {
+                return Err(CasError::Unsupported(
+                    "use push_algebraic_root for algebraic extensions".to_string(),
+                ))
+            }
         };
         let generator = simplify_fully(generator);
 
@@ -137,6 +173,7 @@ impl Tower {
                 arg_derivative_symbol.boxed(),
                 arg_symbol.boxed(),
             )),
+            ExtensionKind::Algebraic => unreachable!("algebraic handled separately"),
         };
 
         self.extensions.push(Extension {
@@ -144,6 +181,52 @@ impl Tower {
             symbol,
             generator,
             derivative,
+            algebraic: None,
+        });
+        Ok(self.extensions.last().expect("extension added"))
+    }
+
+    fn push_algebraic(&mut self, generator: Expr, base: Expr, degree: usize) -> Result<&Extension> {
+        let generator = simplify_fully(generator);
+        if self.extensions.iter().any(|ext| ext.generator == generator) {
+            return Err(CasError::Unsupported("duplicate generator".to_string()));
+        }
+
+        let base_symbol = self.replace_generators(&base);
+        let symbols = self.symbol_set();
+        if !expr_in_field(&base_symbol, &self.base_var, &symbols) {
+            return Err(CasError::Unsupported(
+                "algebraic base not in base field".to_string(),
+            ));
+        }
+
+        let base_derivative = simplify_fully(differentiate(&self.base_var, &base));
+        if base_derivative.is_zero() {
+            return Err(CasError::Unsupported(
+                "algebraic base derivative is zero".to_string(),
+            ));
+        }
+
+        let symbol = self.next_symbol();
+        let minimal_poly = algebraic_minimal_poly(&base_symbol, degree);
+        let derivative = algebraic_derivative(&minimal_poly, self, &symbol, &symbols)?;
+        if derivative.is_zero() {
+            return Err(CasError::Unsupported(
+                "algebraic generator derivative is zero".to_string(),
+            ));
+        }
+
+        self.extensions.push(Extension {
+            kind: ExtensionKind::Algebraic,
+            symbol,
+            generator,
+            derivative,
+            algebraic: Some(AlgebraicExtension {
+                base,
+                base_symbol,
+                degree,
+                minimal_poly,
+            }),
         });
         Ok(self.extensions.last().expect("extension added"))
     }
@@ -168,18 +251,18 @@ impl Tower {
         self.extensions.iter().map(|ext| ext.symbol.clone()).collect()
     }
 
-    fn generator_map(&self) -> HashMap<Expr, String> {
-        self.extensions
-            .iter()
-            .map(|ext| (ext.generator.clone(), ext.symbol.clone()))
-            .collect()
-    }
-
     fn symbol_map(&self) -> HashMap<String, Expr> {
         self.extensions
             .iter()
             .map(|ext| (ext.symbol.clone(), ext.generator.clone()))
             .collect()
+    }
+
+    fn generator_symbol(&self, expr: &Expr) -> Option<&str> {
+        self.extensions
+            .iter()
+            .find(|ext| ext.generator == *expr)
+            .map(|ext| ext.symbol.as_str())
     }
 }
 
@@ -298,6 +381,16 @@ impl FieldElement {
         if numer.is_zero() {
             denom = ExprPoly::one();
             return Ok(FieldElement { numer, denom, tower });
+        }
+
+        if let Some(algebraic) = tower.top_algebraic() {
+            let reduced = reduce_algebraic_rational(&numer, &denom, &algebraic.minimal_poly)?;
+            numer = reduced.0;
+            denom = reduced.1;
+            if numer.is_zero() {
+                denom = ExprPoly::one();
+                return Ok(FieldElement { numer, denom, tower });
+            }
         }
 
         let lc = denom.leading_coeff();
@@ -629,6 +722,74 @@ fn expr_in_field(expr: &Expr, base_var: &str, symbols: &HashSet<String>) -> bool
     }
 }
 
+fn algebraic_minimal_poly(base_symbol: &Expr, degree: usize) -> ExprPoly {
+    let mut coeffs = BTreeMap::new();
+    coeffs.insert(degree, one());
+    coeffs.insert(0, simplify_fully(Expr::Neg(base_symbol.clone().boxed())));
+    simplify_poly_coeffs(ExprPoly { coeffs })
+}
+
+fn algebraic_derivative(
+    minimal: &ExprPoly,
+    tower: &Tower,
+    symbol: &str,
+    symbols: &HashSet<String>,
+) -> Result<Expr> {
+    let m_t = expr_poly_derivative_t(minimal);
+    if expr_poly_is_zero(&m_t) {
+        return Err(CasError::Unsupported(
+            "algebraic minimal polynomial derivative is zero".to_string(),
+        ));
+    }
+    let m_x = algebraic_coeff_derivative(minimal, tower, symbols)?;
+    let inv_m_t = expr_poly_mod_inverse(&m_t, minimal).ok_or_else(|| {
+        CasError::Unsupported("algebraic minimal polynomial not squarefree".to_string())
+    })?;
+    let deriv_poly = expr_poly_mod(
+        &simplify_poly_coeffs(m_x * inv_m_t.scale(&Expr::Constant(
+            -Rational::one(),
+        ))),
+        minimal,
+    );
+    Ok(poly_to_expr(&deriv_poly, symbol))
+}
+
+fn algebraic_coeff_derivative(
+    poly: &ExprPoly,
+    tower: &Tower,
+    symbols: &HashSet<String>,
+) -> Result<ExprPoly> {
+    let mut result = ExprPoly::zero();
+    for (exp, coeff) in poly.coeff_entries() {
+        let coeff_deriv = derive_expr_inner(&coeff, tower, symbols)?;
+        if !coeff_deriv.is_zero() {
+            result = result + poly_from_coeff(exp, coeff_deriv);
+        }
+    }
+    Ok(simplify_poly_coeffs(result))
+}
+
+fn reduce_algebraic_rational(
+    numer: &ExprPoly,
+    denom: &ExprPoly,
+    minimal: &ExprPoly,
+) -> Result<(ExprPoly, ExprPoly)> {
+    let numer = simplify_poly_coeffs(numer.clone());
+    let denom = simplify_poly_coeffs(denom.clone());
+    let numer_mod = expr_poly_mod(&numer, minimal);
+    let denom_mod = expr_poly_mod(&denom, minimal);
+    if expr_poly_is_zero(&denom_mod) {
+        return Err(CasError::Unsupported("division by zero".to_string()));
+    }
+    if expr_poly_is_one(&denom_mod) {
+        return Ok((numer_mod, ExprPoly::one()));
+    }
+    let inv = expr_poly_mod_inverse(&denom_mod, minimal)
+        .ok_or_else(|| CasError::Unsupported("non-invertible denominator".to_string()))?;
+    let reduced = expr_poly_mod(&simplify_poly_coeffs(numer_mod * inv), minimal);
+    Ok((reduced, ExprPoly::one()))
+}
+
 fn extract_integer(exp: &Expr) -> Option<i64> {
     match exp {
         Expr::Constant(c) if c.is_integer() => c.to_integer().to_i64(),
@@ -646,6 +807,54 @@ fn abs_i64_to_usize(value: i64) -> Result<usize> {
 
 fn expr_is_negative_one(expr: &Expr) -> bool {
     matches!(expr, Expr::Constant(c) if *c == -Rational::one())
+}
+
+fn extract_rational_exp(expr: &Expr) -> Option<Rational> {
+    match expr {
+        Expr::Constant(c) => Some(c.clone()),
+        Expr::Neg(inner) => extract_rational_exp(inner).map(|c| -c),
+        _ => None,
+    }
+}
+
+fn rewrite_algebraic_power(base: &Expr, exp: &Expr, tower: &Tower) -> Option<Expr> {
+    let exp = extract_rational_exp(exp)?;
+    if exp.is_integer() {
+        return None;
+    }
+    for ext in &tower.extensions {
+        let algebraic = ext.algebraic.as_ref()?;
+        if &algebraic.base_symbol != base {
+            continue;
+        }
+        let degree = BigInt::from(algebraic.degree as i64);
+        if exp.denom() != &degree {
+            continue;
+        }
+        let (mut q, mut r) = exp.numer().div_rem(&degree);
+        if r.is_negative() {
+            q -= BigInt::one();
+            r += degree.clone();
+        }
+        let q_i64 = q.to_i64()?;
+        let r_i64 = r.to_i64()?;
+        let base_factor = if q_i64 == 0 {
+            None
+        } else {
+            Some(Expr::Pow(base.clone().boxed(), Expr::integer(q_i64).boxed()))
+        };
+        let symbol_factor = Expr::Pow(
+            Expr::Variable(ext.symbol.clone()).boxed(),
+            Expr::integer(r_i64).boxed(),
+        );
+        let combined = if let Some(base_factor) = base_factor {
+            Expr::Mul(base_factor.boxed(), symbol_factor.boxed())
+        } else {
+            symbol_factor
+        };
+        return Some(simplify_fully(combined));
+    }
+    None
 }
 
 fn collect_vars(expr: &Expr, out: &mut HashSet<String>) {
@@ -687,54 +896,58 @@ fn collect_vars(expr: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-fn replace_generators_inner(expr: &Expr, map: &HashMap<Expr, String>) -> Expr {
-    if let Some(symbol) = map.get(expr) {
-        return Expr::Variable(symbol.clone());
+fn replace_generators_inner(expr: &Expr, tower: &Tower) -> Expr {
+    if let Some(symbol) = tower.generator_symbol(expr) {
+        return Expr::Variable(symbol.to_string());
     }
     match expr {
         Expr::Variable(_) | Expr::Constant(_) => expr.clone(),
         Expr::Add(a, b) => Expr::Add(
-            replace_generators_inner(a, map).boxed(),
-            replace_generators_inner(b, map).boxed(),
+            replace_generators_inner(a, tower).boxed(),
+            replace_generators_inner(b, tower).boxed(),
         ),
         Expr::Sub(a, b) => Expr::Sub(
-            replace_generators_inner(a, map).boxed(),
-            replace_generators_inner(b, map).boxed(),
+            replace_generators_inner(a, tower).boxed(),
+            replace_generators_inner(b, tower).boxed(),
         ),
         Expr::Mul(a, b) => Expr::Mul(
-            replace_generators_inner(a, map).boxed(),
-            replace_generators_inner(b, map).boxed(),
+            replace_generators_inner(a, tower).boxed(),
+            replace_generators_inner(b, tower).boxed(),
         ),
         Expr::Div(a, b) => Expr::Div(
-            replace_generators_inner(a, map).boxed(),
-            replace_generators_inner(b, map).boxed(),
+            replace_generators_inner(a, tower).boxed(),
+            replace_generators_inner(b, tower).boxed(),
         ),
-        Expr::Pow(a, b) => Expr::Pow(
-            replace_generators_inner(a, map).boxed(),
-            replace_generators_inner(b, map).boxed(),
-        ),
-        Expr::Neg(inner) => Expr::Neg(replace_generators_inner(inner, map).boxed()),
-        Expr::Sin(inner) => Expr::Sin(replace_generators_inner(inner, map).boxed()),
-        Expr::Cos(inner) => Expr::Cos(replace_generators_inner(inner, map).boxed()),
-        Expr::Tan(inner) => Expr::Tan(replace_generators_inner(inner, map).boxed()),
-        Expr::Sec(inner) => Expr::Sec(replace_generators_inner(inner, map).boxed()),
-        Expr::Csc(inner) => Expr::Csc(replace_generators_inner(inner, map).boxed()),
-        Expr::Cot(inner) => Expr::Cot(replace_generators_inner(inner, map).boxed()),
-        Expr::Atan(inner) => Expr::Atan(replace_generators_inner(inner, map).boxed()),
-        Expr::Asin(inner) => Expr::Asin(replace_generators_inner(inner, map).boxed()),
-        Expr::Acos(inner) => Expr::Acos(replace_generators_inner(inner, map).boxed()),
-        Expr::Asec(inner) => Expr::Asec(replace_generators_inner(inner, map).boxed()),
-        Expr::Acsc(inner) => Expr::Acsc(replace_generators_inner(inner, map).boxed()),
-        Expr::Acot(inner) => Expr::Acot(replace_generators_inner(inner, map).boxed()),
-        Expr::Sinh(inner) => Expr::Sinh(replace_generators_inner(inner, map).boxed()),
-        Expr::Cosh(inner) => Expr::Cosh(replace_generators_inner(inner, map).boxed()),
-        Expr::Tanh(inner) => Expr::Tanh(replace_generators_inner(inner, map).boxed()),
-        Expr::Asinh(inner) => Expr::Asinh(replace_generators_inner(inner, map).boxed()),
-        Expr::Acosh(inner) => Expr::Acosh(replace_generators_inner(inner, map).boxed()),
-        Expr::Atanh(inner) => Expr::Atanh(replace_generators_inner(inner, map).boxed()),
-        Expr::Exp(inner) => Expr::Exp(replace_generators_inner(inner, map).boxed()),
-        Expr::Log(inner) => Expr::Log(replace_generators_inner(inner, map).boxed()),
-        Expr::Abs(inner) => Expr::Abs(replace_generators_inner(inner, map).boxed()),
+        Expr::Pow(a, b) => {
+            let base = replace_generators_inner(a, tower);
+            let exp = replace_generators_inner(b, tower);
+            if let Some(rewritten) = rewrite_algebraic_power(&base, &exp, tower) {
+                return rewritten;
+            }
+            Expr::Pow(base.boxed(), exp.boxed())
+        }
+        Expr::Neg(inner) => Expr::Neg(replace_generators_inner(inner, tower).boxed()),
+        Expr::Sin(inner) => Expr::Sin(replace_generators_inner(inner, tower).boxed()),
+        Expr::Cos(inner) => Expr::Cos(replace_generators_inner(inner, tower).boxed()),
+        Expr::Tan(inner) => Expr::Tan(replace_generators_inner(inner, tower).boxed()),
+        Expr::Sec(inner) => Expr::Sec(replace_generators_inner(inner, tower).boxed()),
+        Expr::Csc(inner) => Expr::Csc(replace_generators_inner(inner, tower).boxed()),
+        Expr::Cot(inner) => Expr::Cot(replace_generators_inner(inner, tower).boxed()),
+        Expr::Atan(inner) => Expr::Atan(replace_generators_inner(inner, tower).boxed()),
+        Expr::Asin(inner) => Expr::Asin(replace_generators_inner(inner, tower).boxed()),
+        Expr::Acos(inner) => Expr::Acos(replace_generators_inner(inner, tower).boxed()),
+        Expr::Asec(inner) => Expr::Asec(replace_generators_inner(inner, tower).boxed()),
+        Expr::Acsc(inner) => Expr::Acsc(replace_generators_inner(inner, tower).boxed()),
+        Expr::Acot(inner) => Expr::Acot(replace_generators_inner(inner, tower).boxed()),
+        Expr::Sinh(inner) => Expr::Sinh(replace_generators_inner(inner, tower).boxed()),
+        Expr::Cosh(inner) => Expr::Cosh(replace_generators_inner(inner, tower).boxed()),
+        Expr::Tanh(inner) => Expr::Tanh(replace_generators_inner(inner, tower).boxed()),
+        Expr::Asinh(inner) => Expr::Asinh(replace_generators_inner(inner, tower).boxed()),
+        Expr::Acosh(inner) => Expr::Acosh(replace_generators_inner(inner, tower).boxed()),
+        Expr::Atanh(inner) => Expr::Atanh(replace_generators_inner(inner, tower).boxed()),
+        Expr::Exp(inner) => Expr::Exp(replace_generators_inner(inner, tower).boxed()),
+        Expr::Log(inner) => Expr::Log(replace_generators_inner(inner, tower).boxed()),
+        Expr::Abs(inner) => Expr::Abs(replace_generators_inner(inner, tower).boxed()),
     }
 }
 
@@ -785,4 +998,133 @@ fn replace_symbols_inner(expr: &Expr, map: &HashMap<String, Expr>) -> Expr {
         Expr::Log(inner) => Expr::Log(replace_symbols_inner(inner, map).boxed()),
         Expr::Abs(inner) => Expr::Abs(replace_symbols_inner(inner, map).boxed()),
     }
+}
+
+fn expr_poly_is_zero(poly: &ExprPoly) -> bool {
+    simplify_poly_coeffs(poly.clone()).is_zero()
+}
+
+fn expr_poly_is_one(poly: &ExprPoly) -> bool {
+    let simplified = simplify_poly_coeffs(poly.clone());
+    simplified.degree() == Some(0) && simplify_fully(simplified.coeff(0)).is_one()
+}
+
+fn expr_poly_div_rem(dividend: &ExprPoly, divisor: &ExprPoly) -> Option<(ExprPoly, ExprPoly)> {
+    if expr_poly_is_zero(divisor) {
+        return None;
+    }
+    let mut remainder = simplify_poly_coeffs(dividend.clone());
+    let mut quotient = ExprPoly::zero();
+    let divisor_degree = divisor.degree()?;
+    let divisor_lc = simplify_fully(divisor.leading_coeff());
+    if divisor_lc.is_zero() {
+        return None;
+    }
+    if divisor_degree == 0 {
+        let scale = Expr::Div(
+            Expr::Constant(Rational::one()).boxed(),
+            divisor_lc.boxed(),
+        );
+        let scaled = simplify_poly_coeffs(dividend.scale(&scale));
+        return Some((scaled, ExprPoly::zero()));
+    }
+
+    while let Some(r_deg) = remainder.degree() {
+        if r_deg < divisor_degree {
+            break;
+        }
+        let power = r_deg - divisor_degree;
+        let coeff = simplify_fully(Expr::Div(
+            remainder.leading_coeff().boxed(),
+            divisor_lc.clone().boxed(),
+        ));
+        let term = poly_from_coeff(power, coeff);
+        quotient = simplify_poly_coeffs(quotient + term.clone());
+        remainder = simplify_poly_coeffs(remainder - term * divisor.clone());
+    }
+
+    Some((simplify_poly_coeffs(quotient), simplify_poly_coeffs(remainder)))
+}
+
+fn expr_poly_mod(poly: &ExprPoly, modulus: &ExprPoly) -> ExprPoly {
+    if expr_poly_is_zero(modulus) {
+        return poly.clone();
+    }
+    let (_, remainder) = expr_poly_div_rem(poly, modulus).unwrap_or((ExprPoly::zero(), poly.clone()));
+    remainder
+}
+
+fn expr_poly_extended_gcd(
+    a: &ExprPoly,
+    b: &ExprPoly,
+) -> Option<(ExprPoly, ExprPoly, ExprPoly)> {
+    let mut r0 = a.clone();
+    let mut r1 = b.clone();
+    let mut s0 = ExprPoly::one();
+    let mut s1 = ExprPoly::zero();
+    let mut t0 = ExprPoly::zero();
+    let mut t1 = ExprPoly::one();
+
+    while !expr_poly_is_zero(&r1) {
+        let (q, r) = expr_poly_div_rem(&r0, &r1)?;
+        r0 = r1;
+        r1 = r;
+        let s2 = simplify_poly_coeffs(s0.clone() - q.clone() * s1.clone());
+        let t2 = simplify_poly_coeffs(t0.clone() - q * t1.clone());
+        s0 = s1;
+        s1 = s2;
+        t0 = t1;
+        t1 = t2;
+    }
+
+    if expr_poly_is_zero(&r0) {
+        return None;
+    }
+    let lc = simplify_fully(r0.leading_coeff());
+    if lc.is_zero() {
+        return None;
+    }
+    let scale = Expr::Div(Expr::Constant(Rational::one()).boxed(), lc.boxed());
+    Some((
+        simplify_poly_coeffs(r0.scale(&scale)),
+        simplify_poly_coeffs(s0.scale(&scale)),
+        simplify_poly_coeffs(t0.scale(&scale)),
+    ))
+}
+
+fn expr_poly_mod_inverse(value: &ExprPoly, modulus: &ExprPoly) -> Option<ExprPoly> {
+    if expr_poly_is_zero(modulus) {
+        return None;
+    }
+    let (gcd, _s, t) = expr_poly_extended_gcd(modulus, value)?;
+    if expr_poly_is_one(&gcd) {
+        return Some(expr_poly_mod(&t, modulus));
+    }
+    if gcd.degree() == Some(0) {
+        let coeff = simplify_fully(gcd.coeff(0));
+        if coeff.is_zero() {
+            return None;
+        }
+        let scale = Expr::Div(Expr::Constant(Rational::one()).boxed(), coeff.boxed());
+        return Some(expr_poly_mod(&simplify_poly_coeffs(t.scale(&scale)), modulus));
+    }
+    None
+}
+
+fn expr_poly_derivative_t(poly: &ExprPoly) -> ExprPoly {
+    let mut coeffs = BTreeMap::new();
+    for (exp, coeff) in poly.coeff_entries() {
+        if exp == 0 {
+            continue;
+        }
+        let factor = Rational::from_integer(BigInt::from(exp as i64));
+        let scaled = simplify_fully(Expr::Mul(
+            coeff.boxed(),
+            Expr::Constant(factor).boxed(),
+        ));
+        if !scaled.is_zero() {
+            coeffs.insert(exp - 1, scaled);
+        }
+    }
+    ExprPoly { coeffs }
 }

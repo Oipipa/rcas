@@ -45,6 +45,7 @@ pub fn substitute(expr: &Expr, var: &str, replacement: &Expr) -> Expr {
         Expr::Atanh(a) => Expr::Atanh(substitute(a, var, replacement).boxed()),
         Expr::Exp(a) => Expr::Exp(substitute(a, var, replacement).boxed()),
         Expr::Log(a) => Expr::Log(substitute(a, var, replacement).boxed()),
+        Expr::Abs(a) => Expr::Abs(substitute(a, var, replacement).boxed()),
         _ => expr.clone(),
     }
 }
