@@ -163,8 +163,6 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
 
     if &original_expr != expr {
         non_elem = detect_non_elementary(expr, var);
-    } else if non_elem.is_none() {
-        non_elem = detect_non_elementary(expr, var);
     }
     if let Some(ref detected) = non_elem {
         if !matches!(kind, IntegrandKind::NonElementary(_)) {
@@ -505,124 +503,77 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     })
 }
 
-fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
-    if is_constant_wrt(expr, var) {
-        let with_var = Expr::Mul(
-            expr.clone().boxed(),
-            Expr::Variable(var.to_string()).boxed(),
-        );
-        return Some(with_var);
+fn integrate_known(expr: &Expr, var: &str, include_log_derivative: bool) -> Option<Expr> {
+    let direct = polynomial::integrate(expr, var)
+        .or_else(|| rational::integrate(expr, var))
+        .or_else(|| trig::integrate(expr, var))
+        .or_else(|| exponential::integrate(expr, var))
+        .or_else(|| logarithmic::integrate(expr, var));
+    if include_log_derivative {
+        direct.or_else(|| integrate_log_derivative(expr, var))
+    } else {
+        direct
     }
-    let direct = match expr {
-        Expr::Add(a, b) => Some(Expr::Add(
-            integrate_direct(a, var)?.boxed(),
-            integrate_direct(b, var)?.boxed(),
-        )),
-        Expr::Sub(a, b) => Some(Expr::Sub(
-            integrate_direct(a, var)?.boxed(),
-            integrate_direct(b, var)?.boxed(),
-        )),
-        Expr::Neg(inner) => integrate_direct(inner, var).map(|r| Expr::Neg(r.boxed())),
-        Expr::Div(num, den) => match (&**num, &**den) {
-            (other, Expr::Constant(c)) => integrate_direct(other, var).map(|r| {
-                Expr::Div(r.boxed(), Expr::Constant(c.clone()).boxed())
-            }),
-            _ => polynomial::integrate(expr, var)
-                .or_else(|| rational::integrate(expr, var))
-                .or_else(|| trig::integrate(expr, var))
-                .or_else(|| exponential::integrate(expr, var))
-                .or_else(|| logarithmic::integrate(expr, var))
-                .or_else(|| integrate_log_derivative(expr, var)),
-        },
-        Expr::Mul(a, b) => match (&**a, &**b) {
-            (Expr::Constant(c), other) | (other, Expr::Constant(c)) => integrate_direct(other, var)
-                .map(|r| Expr::Mul(Expr::Constant(c.clone()).boxed(), r.boxed())),
-            _ => polynomial::integrate(expr, var)
-                .or_else(|| rational::integrate(expr, var))
-                .or_else(|| trig::integrate(expr, var))
-                .or_else(|| exponential::integrate(expr, var))
-                .or_else(|| logarithmic::integrate(expr, var))
-                .or_else(|| integrate_log_derivative(expr, var)),
-        },
-        _ => polynomial::integrate(expr, var)
-            .or_else(|| rational::integrate(expr, var))
-            .or_else(|| trig::integrate(expr, var))
-            .or_else(|| exponential::integrate(expr, var))
-            .or_else(|| logarithmic::integrate(expr, var))
-            .or_else(|| integrate_log_derivative(expr, var)),
-    };
-    if direct.is_some() {
-        return direct;
-    }
-    let (const_expr, factors) = split_constant_factors(expr, var);
-    if is_zero_expr(&const_expr) {
-        return Some(Expr::Constant(Rational::zero()));
-    }
-    if !is_one_expr(&const_expr) {
-        let rest = rebuild_product(Rational::one(), factors.clone());
-        if let Some(result) = integrate_direct(&rest, var) {
-            return Some(apply_constant_factor(const_expr, result));
-        }
-    }
-    None
 }
 
-fn integrate_basic(expr: &Expr, var: &str) -> Option<Expr> {
+fn integrate_linear_ops(expr: &Expr, var: &str, include_log_derivative: bool) -> Option<Expr> {
     if is_constant_wrt(expr, var) {
         return Some(Expr::Mul(
             expr.clone().boxed(),
             Expr::Variable(var.to_string()).boxed(),
         ));
     }
+
     let direct = match expr {
         Expr::Add(a, b) => Some(Expr::Add(
-            integrate_basic(a, var)?.boxed(),
-            integrate_basic(b, var)?.boxed(),
+            integrate_linear_ops(a, var, include_log_derivative)?.boxed(),
+            integrate_linear_ops(b, var, include_log_derivative)?.boxed(),
         )),
         Expr::Sub(a, b) => Some(Expr::Sub(
-            integrate_basic(a, var)?.boxed(),
-            integrate_basic(b, var)?.boxed(),
+            integrate_linear_ops(a, var, include_log_derivative)?.boxed(),
+            integrate_linear_ops(b, var, include_log_derivative)?.boxed(),
         )),
-        Expr::Neg(inner) => integrate_basic(inner, var).map(|r| Expr::Neg(r.boxed())),
+        Expr::Neg(inner) => integrate_linear_ops(inner, var, include_log_derivative)
+            .map(|r| Expr::Neg(r.boxed())),
         Expr::Div(num, den) => match (&**num, &**den) {
-            (other, Expr::Constant(c)) => integrate_basic(other, var).map(|r| {
-                Expr::Div(r.boxed(), Expr::Constant(c.clone()).boxed())
-            }),
-            _ => polynomial::integrate(expr, var)
-                .or_else(|| rational::integrate(expr, var))
-                .or_else(|| trig::integrate(expr, var))
-                .or_else(|| exponential::integrate(expr, var))
-                .or_else(|| logarithmic::integrate(expr, var)),
+            (other, Expr::Constant(c)) => integrate_linear_ops(other, var, include_log_derivative)
+                .map(|r| Expr::Div(r.boxed(), Expr::Constant(c.clone()).boxed())),
+            _ => integrate_known(expr, var, include_log_derivative),
         },
         Expr::Mul(a, b) => match (&**a, &**b) {
-            (Expr::Constant(c), other) | (other, Expr::Constant(c)) => integrate_basic(other, var)
-                .map(|r| Expr::Mul(Expr::Constant(c.clone()).boxed(), r.boxed())),
-            _ => polynomial::integrate(expr, var)
-                .or_else(|| rational::integrate(expr, var))
-                .or_else(|| trig::integrate(expr, var))
-                .or_else(|| exponential::integrate(expr, var))
-                .or_else(|| logarithmic::integrate(expr, var)),
+            (Expr::Constant(c), other) | (other, Expr::Constant(c)) => {
+                integrate_linear_ops(other, var, include_log_derivative)
+                    .map(|r| Expr::Mul(Expr::Constant(c.clone()).boxed(), r.boxed()))
+            }
+            _ => integrate_known(expr, var, include_log_derivative),
         },
-        _ => polynomial::integrate(expr, var)
-            .or_else(|| rational::integrate(expr, var))
-            .or_else(|| trig::integrate(expr, var))
-            .or_else(|| exponential::integrate(expr, var))
-            .or_else(|| logarithmic::integrate(expr, var)),
+        _ => integrate_known(expr, var, include_log_derivative),
     };
+
     if direct.is_some() {
         return direct;
     }
+
     let (const_expr, factors) = split_constant_factors(expr, var);
     if is_zero_expr(&const_expr) {
         return Some(Expr::Constant(Rational::zero()));
     }
     if !is_one_expr(&const_expr) {
-        let rest = rebuild_product(Rational::one(), factors.clone());
-        if let Some(result) = integrate_basic(&rest, var) {
+        let rest = rebuild_product(Rational::one(), factors);
+        if let Some(result) = integrate_linear_ops(&rest, var, include_log_derivative) {
             return Some(apply_constant_factor(const_expr, result));
         }
     }
+
     None
+}
+
+fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
+    integrate_linear_ops(expr, var, true)
+}
+
+fn integrate_basic(expr: &Expr, var: &str) -> Option<Expr> {
+    integrate_linear_ops(expr, var, false)
 }
 
 fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
@@ -650,7 +601,7 @@ fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
             .collect();
         let remaining_expr = simplify_fully(apply_constant_factor(
             const_expr.clone(),
-            rebuild_product(Rational::one(), remaining.clone()),
+            rebuild_product(Rational::one(), remaining),
         ));
 
         let multiplier = {
