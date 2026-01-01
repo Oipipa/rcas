@@ -4,6 +4,7 @@ use crate::simplify::simplify;
 use super::{flatten_product, log_abs, rebuild_product};
 use num_bigint::BigInt;
 use num_traits::{One, Signed, Zero};
+use std::collections::BTreeMap;
 
 pub fn rational_kind(expr: &Expr, var: &str) -> Option<bool> {
     let (num, den) = as_division(expr)?;
@@ -71,23 +72,31 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
         if num_term.is_zero() {
             continue;
         }
-        let factorization = factor_polynomial(&den_term.to_expr(var), var)?;
-        if factorization.constant.is_zero() {
-            return None;
+        let mut partial_fraction = None;
+        if let Some(factorization) = factor_polynomial(&den_term.to_expr(var), var) {
+            if !factorization.constant.is_zero()
+                && factorization
+                    .factors
+                    .iter()
+                    .all(|f| matches!(f.poly.degree(), Some(1 | 2)))
+            {
+                let scaled_num =
+                    num_term.scale(&(Rational::one() / factorization.constant.clone()));
+                let denominator = build_denominator(&factorization);
+                partial_fraction = integrate_partial_fraction(
+                    &scaled_num,
+                    &denominator,
+                    &factorization,
+                    var,
+                );
+            }
         }
 
-        if !factorization
-            .factors
-            .iter()
-            .all(|f| matches!(f.poly.degree(), Some(1 | 2)))
-        {
-            return None;
-        }
-
-        let scaled_num = num_term.scale(&(Rational::one() / factorization.constant.clone()));
-        let denominator = build_denominator(&factorization);
-        let pf = integrate_partial_fraction(&scaled_num, &denominator, &factorization, var)?;
-        pieces.push(pf);
+        let term = match partial_fraction {
+            Some(expr) => expr,
+            None => integrate_rothstein_trager(&num_term, &den_term, var)?,
+        };
+        pieces.push(term);
     }
 
     Some(simplify(sum_exprs(pieces)))
@@ -314,6 +323,371 @@ fn poly_extended_gcd(a: &Poly, b: &Poly) -> (Poly, Poly, Poly) {
     }
     let scale = Rational::one() / lc;
     (r0.scale(&scale), s0.scale(&scale), t0.scale(&scale))
+}
+
+fn integrate_rothstein_trager(numerator: &Poly, denominator: &Poly, var: &str) -> Option<Expr> {
+    if numerator.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+
+    let mut a = numerator.clone();
+    let mut b = denominator.clone();
+    if b.is_zero() {
+        return None;
+    }
+
+    let lc = b.leading_coeff();
+    if !lc.is_one() {
+        let scale = Rational::one() / lc;
+        a = a.scale(&scale);
+        b = b.scale(&scale);
+    }
+
+    let gcd = Poly::gcd(&a, &b);
+    if !gcd.is_one() {
+        a = a.div_exact(&gcd)?;
+        b = b.div_exact(&gcd)?;
+    }
+
+    a = poly_mod(&a, &b);
+    if a.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+
+    let b_prime = b.derivative();
+    if b_prime.is_zero() {
+        return None;
+    }
+
+    let a_t_coeffs = coeffs_a_minus_t_bprime(&a, &b_prime);
+    let b_coeffs = poly_coeffs_const(&b);
+    let resultant = resultant_from_coeffs(&b_coeffs, &a_t_coeffs)?;
+    if resultant.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+
+    let factorization = factor_polynomial(&resultant.to_expr("t"), "t")?;
+    if factorization.constant.is_zero() {
+        return None;
+    }
+
+    let mut terms = Vec::new();
+    for factor in factorization.factors {
+        let s = factor.poly;
+        let degree = s.degree().unwrap_or(0);
+        if degree == 0 {
+            continue;
+        }
+        if degree != 1 {
+            // Algebraic residues need algebraic constants, which Expr cannot represent yet.
+            return None;
+        }
+        let gcd_coeffs = poly_x_gcd_mod(&b_coeffs, &a_t_coeffs, &s)?;
+        let g_t_coeffs = transpose_coeffs_x_t(&gcd_coeffs);
+        if g_t_coeffs.is_empty() {
+            continue;
+        }
+        let s_t_coeffs = poly_coeffs_const(&s);
+        let res_xt = resultant_from_coeffs(&s_t_coeffs, &g_t_coeffs)?;
+        if res_xt.degree().unwrap_or(0) == 0 {
+            continue;
+        }
+        let leading = s.coeff(1);
+        if leading.is_zero() {
+            return None;
+        }
+        let coeff = -s.coeff(0) / leading;
+        terms.push(Expr::Mul(
+            Expr::Constant(coeff).boxed(),
+            log_abs(res_xt.to_expr(var)).boxed(),
+        ));
+    }
+
+    Some(simplify(sum_exprs(terms)))
+}
+
+fn coeffs_a_minus_t_bprime(a: &Poly, b_prime: &Poly) -> Vec<Poly> {
+    let a_coeffs = poly_coeffs_rational(a);
+    let b_coeffs = poly_coeffs_rational(b_prime);
+    let max_len = a_coeffs.len().max(b_coeffs.len());
+    let mut coeffs = Vec::with_capacity(max_len);
+    for idx in 0..max_len {
+        let a_coeff = a_coeffs.get(idx).cloned().unwrap_or_else(Rational::zero);
+        let b_coeff = b_coeffs.get(idx).cloned().unwrap_or_else(Rational::zero);
+        coeffs.push(poly_linear_t(a_coeff, -b_coeff));
+    }
+    trim_poly_coeffs(&mut coeffs);
+    coeffs
+}
+
+fn poly_coeffs_rational(poly: &Poly) -> Vec<Rational> {
+    if poly.is_zero() {
+        return Vec::new();
+    }
+    let degree = poly.degree().unwrap_or(0);
+    let mut coeffs = vec![Rational::zero(); degree + 1];
+    for (exp, coeff) in poly.coeff_entries() {
+        coeffs[exp] = coeff;
+    }
+    coeffs
+}
+
+fn poly_coeffs_const(poly: &Poly) -> Vec<Poly> {
+    if poly.is_zero() {
+        return Vec::new();
+    }
+    let degree = poly.degree().unwrap_or(0);
+    let mut coeffs = vec![Poly::zero(); degree + 1];
+    for (exp, coeff) in poly.coeff_entries() {
+        coeffs[exp] = Poly::from_constant(coeff);
+    }
+    coeffs
+}
+
+fn poly_linear_t(constant: Rational, t_coeff: Rational) -> Poly {
+    let mut coeffs = BTreeMap::new();
+    if !constant.is_zero() {
+        coeffs.insert(0, constant);
+    }
+    if !t_coeff.is_zero() {
+        coeffs.insert(1, t_coeff);
+    }
+    Poly { coeffs }
+}
+
+fn poly_monomial(coeff: Rational, exp: usize) -> Poly {
+    if coeff.is_zero() {
+        return Poly::zero();
+    }
+    let mut coeffs = BTreeMap::new();
+    coeffs.insert(exp, coeff);
+    Poly { coeffs }
+}
+
+fn trim_poly_coeffs(coeffs: &mut Vec<Poly>) {
+    while coeffs.last().map(|c| c.is_zero()).unwrap_or(false) {
+        coeffs.pop();
+    }
+}
+
+fn resultant_from_coeffs(f_coeffs: &[Poly], g_coeffs: &[Poly]) -> Option<Poly> {
+    let mut f = f_coeffs.to_vec();
+    let mut g = g_coeffs.to_vec();
+    trim_poly_coeffs(&mut f);
+    trim_poly_coeffs(&mut g);
+    if f.is_empty() || g.is_empty() {
+        return Some(Poly::zero());
+    }
+
+    let f_deg = f.len() - 1;
+    let g_deg = g.len() - 1;
+    if f_deg == 0 {
+        return Some(f[0].pow(g_deg));
+    }
+    if g_deg == 0 {
+        return Some(g[0].pow(f_deg));
+    }
+
+    let f_desc: Vec<Poly> = f.iter().rev().cloned().collect();
+    let g_desc: Vec<Poly> = g.iter().rev().cloned().collect();
+    let size = f_deg + g_deg;
+    let mut matrix = vec![vec![Poly::zero(); size]; size];
+
+    for row in 0..g_deg {
+        for (col, coeff) in f_desc.iter().enumerate() {
+            matrix[row][row + col] = coeff.clone();
+        }
+    }
+    for row in 0..f_deg {
+        for (col, coeff) in g_desc.iter().enumerate() {
+            matrix[g_deg + row][row + col] = coeff.clone();
+        }
+    }
+
+    det_bareiss(matrix)
+}
+
+fn det_bareiss(mut matrix: Vec<Vec<Poly>>) -> Option<Poly> {
+    let n = matrix.len();
+    if n == 0 {
+        return Some(Poly::one());
+    }
+
+    let mut denom = Poly::one();
+    for k in 0..(n - 1) {
+        let mut pivot_row = None;
+        let mut pivot_col = None;
+        'search: for i in k..n {
+            for j in k..n {
+                if !matrix[i][j].is_zero() {
+                    pivot_row = Some(i);
+                    pivot_col = Some(j);
+                    break 'search;
+                }
+            }
+        }
+
+        let (pivot_row, pivot_col) = match (pivot_row, pivot_col) {
+            (Some(r), Some(c)) => (r, c),
+            _ => return Some(Poly::zero()),
+        };
+
+        if pivot_row != k {
+            matrix.swap(k, pivot_row);
+        }
+        if pivot_col != k {
+            for row in matrix.iter_mut() {
+                row.swap(k, pivot_col);
+            }
+        }
+
+        let pivot = matrix[k][k].clone();
+        if pivot.is_zero() {
+            return Some(Poly::zero());
+        }
+
+        for i in (k + 1)..n {
+            for j in (k + 1)..n {
+                let term =
+                    matrix[i][j].clone() * pivot.clone()
+                        - matrix[i][k].clone() * matrix[k][j].clone();
+                if k == 0 {
+                    matrix[i][j] = term;
+                } else {
+                    if denom.is_zero() {
+                        return None;
+                    }
+                    matrix[i][j] = term.div_exact(&denom)?;
+                }
+            }
+        }
+
+        for i in (k + 1)..n {
+            matrix[i][k] = Poly::zero();
+            matrix[k][i] = Poly::zero();
+        }
+
+        denom = pivot;
+    }
+
+    Some(matrix[n - 1][n - 1].clone())
+}
+
+fn mod_poly_add(a: &Poly, b: &Poly, modulus: &Poly) -> Poly {
+    poly_mod(&(a.clone() + b.clone()), modulus)
+}
+
+fn mod_poly_sub(a: &Poly, b: &Poly, modulus: &Poly) -> Poly {
+    poly_mod(&(a.clone() - b.clone()), modulus)
+}
+
+fn mod_poly_mul(a: &Poly, b: &Poly, modulus: &Poly) -> Poly {
+    poly_mod(&(a.clone() * b.clone()), modulus)
+}
+
+fn mod_poly_inv(value: &Poly, modulus: &Poly) -> Option<Poly> {
+    if value.is_zero() {
+        return None;
+    }
+    let reduced = poly_mod(value, modulus);
+    if reduced.is_zero() {
+        return None;
+    }
+    poly_mod_inverse(&reduced, modulus)
+}
+
+fn poly_x_gcd_mod(a: &[Poly], b: &[Poly], modulus: &Poly) -> Option<Vec<Poly>> {
+    let mut r0 = a.iter().map(|c| poly_mod(c, modulus)).collect::<Vec<_>>();
+    let mut r1 = b.iter().map(|c| poly_mod(c, modulus)).collect::<Vec<_>>();
+    trim_poly_coeffs(&mut r0);
+    trim_poly_coeffs(&mut r1);
+
+    while !r1.is_empty() {
+        let (_, r) = poly_x_div_rem_mod(&r0, &r1, modulus)?;
+        r0 = r1;
+        r1 = r;
+    }
+
+    if r0.is_empty() {
+        return Some(Vec::new());
+    }
+    let lc = r0.last().cloned().unwrap_or_else(Poly::zero);
+    if lc.is_zero() {
+        return Some(Vec::new());
+    }
+    let inv_lc = mod_poly_inv(&lc, modulus)?;
+    for coeff in r0.iter_mut() {
+        *coeff = mod_poly_mul(coeff, &inv_lc, modulus);
+    }
+    trim_poly_coeffs(&mut r0);
+    Some(r0)
+}
+
+fn poly_x_div_rem_mod(
+    dividend: &[Poly],
+    divisor: &[Poly],
+    modulus: &Poly,
+) -> Option<(Vec<Poly>, Vec<Poly>)> {
+    let mut remainder = dividend.to_vec();
+    let mut divisor = divisor.to_vec();
+    trim_poly_coeffs(&mut remainder);
+    trim_poly_coeffs(&mut divisor);
+    if divisor.is_empty() {
+        return None;
+    }
+
+    let divisor_deg = divisor.len() - 1;
+    let divisor_lc = divisor[divisor_deg].clone();
+    let inv_lc = mod_poly_inv(&divisor_lc, modulus)?;
+    let mut quotient = if remainder.len() > divisor_deg {
+        vec![Poly::zero(); remainder.len() - divisor_deg]
+    } else {
+        Vec::new()
+    };
+
+    while !remainder.is_empty() && remainder.len() - 1 >= divisor_deg {
+        let power = remainder.len() - 1 - divisor_deg;
+        let lead = remainder.last().cloned().unwrap_or_else(Poly::zero);
+        let coeff = mod_poly_mul(&lead, &inv_lc, modulus);
+        if power < quotient.len() {
+            quotient[power] = mod_poly_add(&quotient[power], &coeff, modulus);
+        }
+
+        for i in 0..=divisor_deg {
+            let idx = power + i;
+            let prod = mod_poly_mul(&coeff, &divisor[i], modulus);
+            remainder[idx] = mod_poly_sub(&remainder[idx], &prod, modulus);
+        }
+        trim_poly_coeffs(&mut remainder);
+    }
+
+    trim_poly_coeffs(&mut quotient);
+    Some((quotient, remainder))
+}
+
+fn transpose_coeffs_x_t(coeffs_x: &[Poly]) -> Vec<Poly> {
+    let mut max_deg = 0;
+    for coeff in coeffs_x {
+        if let Some(deg) = coeff.degree() {
+            max_deg = max_deg.max(deg);
+        }
+    }
+    if coeffs_x.is_empty() {
+        return Vec::new();
+    }
+
+    let mut coeffs_t = vec![Poly::zero(); max_deg + 1];
+    for (x_exp, coeff_t) in coeffs_x.iter().enumerate() {
+        for (t_exp, t_coeff) in coeff_t.coeff_entries() {
+            if t_coeff.is_zero() {
+                continue;
+            }
+            let term = poly_monomial(t_coeff, x_exp);
+            coeffs_t[t_exp] = coeffs_t[t_exp].clone() + term;
+        }
+    }
+    trim_poly_coeffs(&mut coeffs_t);
+    coeffs_t
 }
 
 fn as_division(expr: &Expr) -> Option<(Expr, Expr)> {

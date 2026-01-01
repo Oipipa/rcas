@@ -7,7 +7,7 @@ use num_traits::{One, ToPrimitive, Zero};
 use crate::diff_field::{ExtensionKind, FieldElement, Tower};
 use crate::expr::{Expr, Rational};
 use crate::polynomial::{Poly, Polynomial};
-use crate::simplify::simplify_fully;
+use crate::simplify::{normalize, simplify_fully};
 
 use super::{NonElementaryKind, contains_var, polynomial, rational};
 
@@ -936,7 +936,7 @@ fn integrate_algebraic_term(
         return Some(Expr::Constant(Rational::zero()));
     }
 
-    let base_norm = simplify_fully(base_expr.clone());
+    let base_norm = normalize(base_expr.clone());
     let mut poly_power: i64 = 0;
     let mut sqrt_power: i64 = 0;
     let mut rest_factors = Vec::new();
@@ -994,14 +994,45 @@ fn factor_out_var(expr: &Expr, var: &str) -> Option<Expr> {
     let mut removed = false;
     let mut idx = 0;
     while idx < factors.len() {
-        if matches!(&factors[idx], Expr::Variable(name) if name == var) {
-            factors.remove(idx);
-            removed = true;
-            break;
+        match &factors[idx] {
+            Expr::Variable(name) if name == var => {
+                factors.remove(idx);
+                removed = true;
+                break;
+            }
+            Expr::Pow(base, exp) => {
+                if let Expr::Variable(name) = &**base {
+                    if name == var {
+                        if let Expr::Constant(power) = &**exp {
+                            if power.is_integer() {
+                                let int_power = power.to_integer();
+                                if int_power > BigInt::from(0) {
+                                    removed = true;
+                                    if int_power == BigInt::from(1) {
+                                        factors.remove(idx);
+                                    } else {
+                                        let new_exp =
+                                            Rational::from_integer(int_power - BigInt::from(1));
+                                        factors[idx] = Expr::Pow(
+                                            base.clone(),
+                                            Expr::Constant(new_exp).boxed(),
+                                        );
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
         idx += 1;
     }
     if !removed {
+        if let Some(divided) = divide_out_var(expr, var) {
+            return Some(simplify_fully(divided));
+        }
         let var_expr = Expr::Variable(var.to_string());
         let candidate = simplify_fully(Expr::Div(expr.clone().boxed(), var_expr.clone().boxed()));
         let rebuilt = simplify_fully(Expr::Mul(candidate.clone().boxed(), var_expr.boxed()));
@@ -1011,6 +1042,56 @@ fn factor_out_var(expr: &Expr, var: &str) -> Option<Expr> {
         return None;
     }
     Some(super::rebuild_product(const_factor, factors))
+}
+
+fn divide_out_var(expr: &Expr, var: &str) -> Option<Expr> {
+    match expr {
+        Expr::Variable(name) if name == var => Some(Expr::Constant(Rational::one())),
+        Expr::Mul(a, b) => {
+            if let Some(left) = divide_out_var(a, var) {
+                Some(Expr::Mul(left.boxed(), b.clone().boxed()))
+            } else {
+                divide_out_var(b, var).map(|right| Expr::Mul(a.clone().boxed(), right.boxed()))
+            }
+        }
+        Expr::Div(a, b) => divide_out_var(a, var)
+            .map(|left| Expr::Div(left.boxed(), b.clone().boxed())),
+        Expr::Pow(base, exp) => {
+            if let Expr::Variable(name) = &**base {
+                if name == var {
+                    if let Expr::Constant(power) = &**exp {
+                        if power.is_integer() {
+                            let int_power = power.to_integer();
+                            if int_power > BigInt::from(0) {
+                                if int_power == BigInt::from(1) {
+                                    return Some(Expr::Constant(Rational::one()));
+                                }
+                                let new_exp =
+                                    Rational::from_integer(int_power - BigInt::from(1));
+                                return Some(Expr::Pow(
+                                    base.clone(),
+                                    Expr::Constant(new_exp).boxed(),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Expr::Add(a, b) => {
+            let left = divide_out_var(a, var)?;
+            let right = divide_out_var(b, var)?;
+            Some(Expr::Add(left.boxed(), right.boxed()))
+        }
+        Expr::Sub(a, b) => {
+            let left = divide_out_var(a, var)?;
+            let right = divide_out_var(b, var)?;
+            Some(Expr::Sub(left.boxed(), right.boxed()))
+        }
+        Expr::Neg(inner) => divide_out_var(inner, var).map(|res| Expr::Neg(res.boxed())),
+        _ => None,
+    }
 }
 
 fn even_poly_to_u(poly: &Poly) -> Option<Poly> {
@@ -1039,6 +1120,28 @@ mod algebraic_even_reduction_tests {
             "expected quartic even-base reduction to succeed"
         );
     }
+
+    #[test]
+    fn reduces_quartic_even_base_with_quadratic_term() {
+        let expr = parse_expr("x/(x^4+x^2+1)^(1/2)").unwrap();
+        let base = parse_expr("x^4 + x^2 + 1").unwrap();
+        let base_poly = Poly::from_expr(&base, "x").unwrap();
+        assert!(
+            integrate_even_base_odd_substitution(&expr, "x", &base_poly).is_some(),
+            "expected quartic even-base reduction with quadratic term to succeed"
+        );
+    }
+
+    #[test]
+    fn reduces_quartic_even_base_with_even_multiplier() {
+        let expr = parse_expr("x*(x^2+1)/(x^4+x^2+1)^(1/2)").unwrap();
+        let base = parse_expr("x^4 + x^2 + 1").unwrap();
+        let base_poly = Poly::from_expr(&base, "x").unwrap();
+        assert!(
+            integrate_even_base_odd_substitution(&expr, "x", &base_poly).is_some(),
+            "expected even-base reduction with even multiplier to succeed"
+        );
+    }
 }
 
 fn extract_base_powers(
@@ -1049,7 +1152,7 @@ fn extract_base_powers(
         return Ok(Some((1, 0)));
     }
     if let Expr::Pow(inner, exp) = factor {
-        let inner_norm = simplify_fully((**inner).clone());
+        let inner_norm = normalize((**inner).clone());
         if inner_norm != *base {
             return Ok(None);
         }

@@ -1,9 +1,10 @@
 use crate::expr::{Expr, Rational};
-use crate::simplify::{simplify, simplify_fully};
+use crate::simplify::{simplify, simplify_fully, substitute};
 use num_traits::{One, ToPrimitive, Zero};
 use num_bigint::BigInt;
 
 use super::{coeff_of_var, contains_var, flatten_product, linear_parts, log_abs, rebuild_product};
+use super::rational;
 
 pub fn is_trig(expr: &Expr) -> bool {
     matches!(
@@ -29,8 +30,19 @@ pub fn is_trig(expr: &Expr) -> bool {
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrigFamily {
+    Circular,
+    Hyperbolic,
+}
+
+struct TrigRationalInfo {
+    family: TrigFamily,
+    arg: Expr,
+}
+
 pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
-    match expr {
+    let direct = match expr {
         Expr::Sin(arg) => {
             let k = coeff_of_var(arg, var)?;
             let base = Expr::Neg(Expr::Cos(arg.clone().boxed()).boxed());
@@ -73,6 +85,446 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
         Expr::Acosh(arg) => integrate_acosh(arg, var),
         Expr::Atanh(arg) => integrate_atanh(arg, var),
         _ => None,
+    };
+    direct.or_else(|| integrate_rational_trig(expr, var))
+}
+
+fn integrate_rational_trig(expr: &Expr, var: &str) -> Option<Expr> {
+    let info = trig_rational_info(expr, var)?;
+    let k = coeff_of_var(&info.arg, var)?;
+    let t_name = fresh_var_name(expr, var, "t");
+    let t_var = Expr::Variable(t_name.clone());
+    let replaced = replace_trig_expr(expr, &info, &t_var)?;
+    let dx_factor = half_angle_dx_factor(info.family, &t_var);
+    let integrand_t = simplify(Expr::Mul(replaced.boxed(), dx_factor.boxed()));
+    let (num_t, den_t) = rationalize_expr(&integrand_t, &t_name)?;
+    let num_t = simplify(num_t);
+    let den_t = simplify(den_t);
+    let rational_t = Expr::Div(num_t.boxed(), den_t.boxed());
+    let integrated_t = rational::integrate(&rational_t, &t_name)?;
+    let t_sub = half_angle_substitution(info.family, &info.arg);
+    let restored = substitute(&integrated_t, &t_name, &t_sub);
+    Some(simplify(scale_by_coeff(restored, k)))
+}
+
+fn trig_rational_info(expr: &Expr, var: &str) -> Option<TrigRationalInfo> {
+    let mut family = None;
+    let mut arg = None;
+    scan_trig_rational(expr, var, false, &mut family, &mut arg)?;
+    Some(TrigRationalInfo {
+        family: family?,
+        arg: arg?,
+    })
+}
+
+fn scan_trig_rational(
+    expr: &Expr,
+    var: &str,
+    inside_trig_arg: bool,
+    family: &mut Option<TrigFamily>,
+    arg: &mut Option<Expr>,
+) -> Option<()> {
+    match expr {
+        Expr::Variable(name) => {
+            if name == var && !inside_trig_arg {
+                None
+            } else {
+                Some(())
+            }
+        }
+        Expr::Constant(_) => Some(()),
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b) => {
+            scan_trig_rational(a, var, inside_trig_arg, family, arg)?;
+            scan_trig_rational(b, var, inside_trig_arg, family, arg)?;
+            Some(())
+        }
+        Expr::Neg(inner) => scan_trig_rational(inner, var, inside_trig_arg, family, arg),
+        Expr::Pow(base, exp) => {
+            if extract_integer(exp).is_none() {
+                return None;
+            }
+            scan_trig_rational(base, var, inside_trig_arg, family, arg)
+        }
+        Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner) => {
+            if inside_trig_arg {
+                return None;
+            }
+            set_trig_family(family, TrigFamily::Circular)?;
+            let (base, _) = normalize_arg(inner);
+            update_trig_arg(arg, base)?;
+            scan_trig_rational(inner, var, true, family, arg)?;
+            Some(())
+        }
+        Expr::Sinh(inner) | Expr::Cosh(inner) | Expr::Tanh(inner) => {
+            if inside_trig_arg {
+                return None;
+            }
+            set_trig_family(family, TrigFamily::Hyperbolic)?;
+            let (base, _) = normalize_arg(inner);
+            update_trig_arg(arg, base)?;
+            scan_trig_rational(inner, var, true, family, arg)?;
+            Some(())
+        }
+        Expr::Atan(_)
+        | Expr::Asin(_)
+        | Expr::Acos(_)
+        | Expr::Asec(_)
+        | Expr::Acsc(_)
+        | Expr::Acot(_)
+        | Expr::Asinh(_)
+        | Expr::Acosh(_)
+        | Expr::Atanh(_)
+        | Expr::Exp(_)
+        | Expr::Log(_)
+        | Expr::Abs(_) => None,
+    }
+}
+
+fn set_trig_family(slot: &mut Option<TrigFamily>, family: TrigFamily) -> Option<()> {
+    match slot {
+        Some(existing) if *existing != family => None,
+        _ => {
+            *slot = Some(family);
+            Some(())
+        }
+    }
+}
+
+fn update_trig_arg(slot: &mut Option<Expr>, arg: Expr) -> Option<()> {
+    if let Some(existing) = slot {
+        if *existing != arg {
+            return None;
+        }
+    } else {
+        *slot = Some(arg);
+    }
+    Some(())
+}
+
+fn fresh_var_name(expr: &Expr, var: &str, base: &str) -> String {
+    if base != var && !contains_var(expr, base) {
+        return base.to_string();
+    }
+    for idx in 1..64 {
+        let candidate = format!("{base}{idx}");
+        if candidate != var && !contains_var(expr, &candidate) {
+            return candidate;
+        }
+    }
+    format!("{base}_sub")
+}
+
+fn normalize_arg(expr: &Expr) -> (Expr, bool) {
+    match expr {
+        Expr::Neg(inner) => ((*inner.clone()), true),
+        Expr::Mul(a, b) => {
+            if let Expr::Constant(c) = &**a {
+                if c < &Rational::zero() {
+                    let base = Expr::Mul(
+                        Expr::Constant(-c.clone()).boxed(),
+                        b.clone(),
+                    );
+                    return (simplify(base), true);
+                }
+            }
+            if let Expr::Constant(c) = &**b {
+                if c < &Rational::zero() {
+                    let base = Expr::Mul(
+                        a.clone(),
+                        Expr::Constant(-c.clone()).boxed(),
+                    );
+                    return (simplify(base), true);
+                }
+            }
+            (expr.clone(), false)
+        }
+        Expr::Div(a, b) => {
+            if let Expr::Constant(c) = &**b {
+                if c < &Rational::zero() {
+                    let base = Expr::Div(
+                        a.clone(),
+                        Expr::Constant(-c.clone()).boxed(),
+                    );
+                    return (simplify(base), true);
+                }
+            }
+            (expr.clone(), false)
+        }
+        _ => (expr.clone(), false),
+    }
+}
+
+fn replace_trig_expr(expr: &Expr, info: &TrigRationalInfo, t_var: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::Constant(_) | Expr::Variable(_) => Some(expr.clone()),
+        Expr::Add(a, b) => Some(Expr::Add(
+            replace_trig_expr(a, info, t_var)?.boxed(),
+            replace_trig_expr(b, info, t_var)?.boxed(),
+        )),
+        Expr::Sub(a, b) => Some(Expr::Sub(
+            replace_trig_expr(a, info, t_var)?.boxed(),
+            replace_trig_expr(b, info, t_var)?.boxed(),
+        )),
+        Expr::Mul(a, b) => Some(Expr::Mul(
+            replace_trig_expr(a, info, t_var)?.boxed(),
+            replace_trig_expr(b, info, t_var)?.boxed(),
+        )),
+        Expr::Div(a, b) => Some(Expr::Div(
+            replace_trig_expr(a, info, t_var)?.boxed(),
+            replace_trig_expr(b, info, t_var)?.boxed(),
+        )),
+        Expr::Neg(inner) => replace_trig_expr(inner, info, t_var)
+            .map(|r| Expr::Neg(r.boxed())),
+        Expr::Pow(base, exp) => {
+            if extract_integer(exp).is_none() {
+                return None;
+            }
+            Some(Expr::Pow(
+                replace_trig_expr(base, info, t_var)?.boxed(),
+                exp.clone(),
+            ))
+        }
+        Expr::Sin(arg) => replace_circular_func(CircularFunc::Sin, arg, info, t_var),
+        Expr::Cos(arg) => replace_circular_func(CircularFunc::Cos, arg, info, t_var),
+        Expr::Tan(arg) => replace_circular_func(CircularFunc::Tan, arg, info, t_var),
+        Expr::Sec(arg) => replace_circular_func(CircularFunc::Sec, arg, info, t_var),
+        Expr::Csc(arg) => replace_circular_func(CircularFunc::Csc, arg, info, t_var),
+        Expr::Cot(arg) => replace_circular_func(CircularFunc::Cot, arg, info, t_var),
+        Expr::Sinh(arg) => replace_hyperbolic_func(HyperbolicFunc::Sinh, arg, info, t_var),
+        Expr::Cosh(arg) => replace_hyperbolic_func(HyperbolicFunc::Cosh, arg, info, t_var),
+        Expr::Tanh(arg) => replace_hyperbolic_func(HyperbolicFunc::Tanh, arg, info, t_var),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CircularFunc {
+    Sin,
+    Cos,
+    Tan,
+    Sec,
+    Csc,
+    Cot,
+}
+
+fn replace_circular_func(
+    func: CircularFunc,
+    arg: &Expr,
+    info: &TrigRationalInfo,
+    t_var: &Expr,
+) -> Option<Expr> {
+    if info.family != TrigFamily::Circular {
+        return None;
+    }
+    let (base, negated) = normalize_arg(arg);
+    if base != info.arg {
+        return None;
+    }
+    let t_sq = t_square(t_var);
+    let one = Expr::Constant(Rational::one());
+    let two = Expr::Constant(Rational::from_integer(2.into()));
+    let one_plus = Expr::Add(one.clone().boxed(), t_sq.clone().boxed());
+    let one_minus = Expr::Sub(one.clone().boxed(), t_sq.clone().boxed());
+    let expr = match func {
+        CircularFunc::Sin => Expr::Div(
+            Expr::Mul(two.clone().boxed(), t_var.clone().boxed()).boxed(),
+            one_plus.clone().boxed(),
+        ),
+        CircularFunc::Cos => Expr::Div(one_minus.clone().boxed(), one_plus.clone().boxed()),
+        CircularFunc::Tan => Expr::Div(
+            Expr::Mul(two.clone().boxed(), t_var.clone().boxed()).boxed(),
+            one_minus.clone().boxed(),
+        ),
+        CircularFunc::Sec => Expr::Div(one_plus.clone().boxed(), one_minus.clone().boxed()),
+        CircularFunc::Csc => Expr::Div(
+            one_plus.clone().boxed(),
+            Expr::Mul(two.clone().boxed(), t_var.clone().boxed()).boxed(),
+        ),
+        CircularFunc::Cot => Expr::Div(
+            one_minus.clone().boxed(),
+            Expr::Mul(two.clone().boxed(), t_var.clone().boxed()).boxed(),
+        ),
+    };
+    let odd = matches!(
+        func,
+        CircularFunc::Sin | CircularFunc::Tan | CircularFunc::Csc | CircularFunc::Cot
+    );
+    Some(apply_parity(expr, negated, odd))
+}
+
+#[derive(Clone, Copy)]
+enum HyperbolicFunc {
+    Sinh,
+    Cosh,
+    Tanh,
+}
+
+fn replace_hyperbolic_func(
+    func: HyperbolicFunc,
+    arg: &Expr,
+    info: &TrigRationalInfo,
+    t_var: &Expr,
+) -> Option<Expr> {
+    if info.family != TrigFamily::Hyperbolic {
+        return None;
+    }
+    let (base, negated) = normalize_arg(arg);
+    if base != info.arg {
+        return None;
+    }
+    let t_sq = t_square(t_var);
+    let one = Expr::Constant(Rational::one());
+    let two = Expr::Constant(Rational::from_integer(2.into()));
+    let one_minus = Expr::Sub(one.clone().boxed(), t_sq.clone().boxed());
+    let one_plus = Expr::Add(one.clone().boxed(), t_sq.clone().boxed());
+    let expr = match func {
+        HyperbolicFunc::Sinh => Expr::Div(
+            Expr::Mul(two.clone().boxed(), t_var.clone().boxed()).boxed(),
+            one_minus.clone().boxed(),
+        ),
+        HyperbolicFunc::Cosh => Expr::Div(one_plus.clone().boxed(), one_minus.clone().boxed()),
+        HyperbolicFunc::Tanh => Expr::Div(
+            Expr::Mul(two.clone().boxed(), t_var.clone().boxed()).boxed(),
+            one_plus.clone().boxed(),
+        ),
+    };
+    let odd = matches!(func, HyperbolicFunc::Sinh | HyperbolicFunc::Tanh);
+    Some(apply_parity(expr, negated, odd))
+}
+
+fn apply_parity(expr: Expr, negated: bool, odd: bool) -> Expr {
+    if negated && odd {
+        Expr::Neg(expr.boxed())
+    } else {
+        expr
+    }
+}
+
+fn t_square(t_var: &Expr) -> Expr {
+    Expr::Pow(
+        t_var.clone().boxed(),
+        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+    )
+}
+
+fn half_angle_dx_factor(family: TrigFamily, t_var: &Expr) -> Expr {
+    let two = Expr::Constant(Rational::from_integer(2.into()));
+    let t_sq = t_square(t_var);
+    let denom = match family {
+        TrigFamily::Circular => Expr::Add(
+            Expr::Constant(Rational::one()).boxed(),
+            t_sq.boxed(),
+        ),
+        TrigFamily::Hyperbolic => Expr::Sub(
+            Expr::Constant(Rational::one()).boxed(),
+            t_sq.boxed(),
+        ),
+    };
+    Expr::Div(two.boxed(), denom.boxed())
+}
+
+fn half_angle_substitution(family: TrigFamily, arg: &Expr) -> Expr {
+    let half = Expr::Constant(Rational::new(1.into(), 2.into()));
+    let half_arg = simplify(Expr::Mul(half.boxed(), arg.clone().boxed()));
+    match family {
+        TrigFamily::Circular => Expr::Tan(half_arg.boxed()),
+        TrigFamily::Hyperbolic => Expr::Tanh(half_arg.boxed()),
+    }
+}
+
+fn extract_integer(exp: &Expr) -> Option<i64> {
+    match exp {
+        Expr::Constant(c) if c.is_integer() => c.to_integer().to_i64(),
+        Expr::Neg(inner) => extract_integer(inner).map(|value| -value),
+        _ => None,
+    }
+}
+
+fn rationalize_expr(expr: &Expr, var: &str) -> Option<(Expr, Expr)> {
+    if !contains_var(expr, var) {
+        return Some((expr.clone(), Expr::Constant(Rational::one())));
+    }
+    match expr {
+        Expr::Variable(name) if name == var => Some((
+            Expr::Variable(name.clone()),
+            Expr::Constant(Rational::one()),
+        )),
+        Expr::Constant(_) => Some((expr.clone(), Expr::Constant(Rational::one()))),
+        Expr::Add(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Add(
+                Expr::Mul(an.boxed(), bd.clone().boxed()).boxed(),
+                Expr::Mul(bn.boxed(), ad.clone().boxed()).boxed(),
+            );
+            let denom = Expr::Mul(ad.boxed(), bd.boxed());
+            Some((numer, denom))
+        }
+        Expr::Sub(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Sub(
+                Expr::Mul(an.boxed(), bd.clone().boxed()).boxed(),
+                Expr::Mul(bn.boxed(), ad.clone().boxed()).boxed(),
+            );
+            let denom = Expr::Mul(ad.boxed(), bd.boxed());
+            Some((numer, denom))
+        }
+        Expr::Mul(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Mul(an.boxed(), bn.boxed());
+            let denom = Expr::Mul(ad.boxed(), bd.boxed());
+            Some((numer, denom))
+        }
+        Expr::Div(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Mul(an.boxed(), bd.boxed());
+            let denom = Expr::Mul(ad.boxed(), bn.boxed());
+            Some((numer, denom))
+        }
+        Expr::Neg(inner) => {
+            let (n, d) = rationalize_expr(inner, var)?;
+            Some((Expr::Neg(n.boxed()), d))
+        }
+        Expr::Pow(base, exp) => {
+            let power = extract_integer(exp)?;
+            if power == 0 {
+                return Some((
+                    Expr::Constant(Rational::one()),
+                    Expr::Constant(Rational::one()),
+                ));
+            }
+            let abs_power = power.abs() as usize;
+            let (bn, bd) = rationalize_expr(base, var)?;
+            let mut numer = pow_expr(bn, abs_power);
+            let mut denom = pow_expr(bd, abs_power);
+            if power < 0 {
+                std::mem::swap(&mut numer, &mut denom);
+            }
+            Some((numer, denom))
+        }
+        _ => None,
+    }
+}
+
+fn pow_expr(expr: Expr, power: usize) -> Expr {
+    match power {
+        0 => Expr::Constant(Rational::one()),
+        1 => expr,
+        _ => Expr::Pow(
+            expr.boxed(),
+            Expr::Constant(Rational::from_integer(power.into())).boxed(),
+        ),
     }
 }
 

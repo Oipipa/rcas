@@ -1353,6 +1353,30 @@ fn rational_hermite_roundtrip_suite() {
 }
 
 #[test]
+fn rational_rothstein_trager_roundtrip_suite() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        ("(3*x^2 + 1)/(x^3 + x + 1)", vec![0.2, 0.8, 1.4]),
+        (
+            "1/2*(3*x^2 + 1)/(x^3 + x + 1)",
+            vec![0.2, 0.8, 1.4],
+        ),
+        ("(4*x^3 + 1)/(x^4 + x + 1)", vec![0.1, 0.7, 1.3]),
+        (
+            "(3*x^2 + 1)*(x^3 + x + 2)/(x^3 + x + 1)^2",
+            vec![0.2, 0.8, 1.6],
+        ),
+        (
+            "(4*x^3 + 1)*(x^4 + x + 2)/(x^4 + x + 1)^2",
+            vec![0.1, 0.6, 1.2],
+        ),
+    ];
+
+    for (input, samples) in cases {
+        assert_rational_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn risch_handles_large_exp_polynomial() {
     let poly = build_poly_sum("x", 60);
     let expr = Expr::Mul(poly.boxed(), Expr::Exp(Expr::Variable("x".to_string()).boxed()).boxed());
@@ -1504,11 +1528,47 @@ fn algebraic_quartic_radical_odd_suite() {
     let cases = vec![
         "x/(x^4 + 1)^(1/2)",
         "x*(x^4 + 1)^(1/2)",
+        "x^3/(x^4 + 1)^(1/2)",
+        "x^3*(x^4 + 1)^(1/2)",
         "x/(x^4 + 4)^(1/2)",
         "x*(x^4 + 4)^(1/2)",
+        "x/(x^4 + x^2 + 1)^(1/2)",
+        "x*(x^4 + x^2 + 1)^(1/2)",
+        "x^3/(x^4 + x^2 + 1)^(1/2)",
+        "x^3*(x^4 + x^2 + 1)^(1/2)",
+        "x/(x^4 + 4*x^2 + 1)^(1/2)",
+        "x*(x^4 + 4*x^2 + 1)^(1/2)",
+        "x^3/(x^4 + 4*x^2 + 1)^(1/2)",
+        "x^3*(x^4 + 4*x^2 + 1)^(1/2)",
+        "x/(2*x^4 + x^2 + 3)^(1/2)",
+        "x*(2*x^4 + x^2 + 3)^(1/2)",
+        "x^3/(2*x^4 + x^2 + 3)^(1/2)",
+        "x^3*(2*x^4 + x^2 + 3)^(1/2)",
+        "x/(3*x^4 + 2*x^2 + 5)^(1/2)",
+        "x*(3*x^4 + 2*x^2 + 5)^(1/2)",
+        "x/(x^4 + 1)^(3/2)",
+        "x*(x^4 + 1)^(3/2)",
+        "x^3/(x^4 + 1)^(3/2)",
+        "x^3*(x^4 + 1)^(3/2)",
+        "x/(x^4 + x^2 + 1)^(3/2)",
+        "x*(x^4 + x^2 + 1)^(3/2)",
+        "x/(2*x^4 + x^2 + 3)^(3/2)",
+        "x*(2*x^4 + x^2 + 3)^(3/2)",
+        "x/(3*x^4 + 2*x^2 + 5)^(3/2)",
+        "x*(3*x^4 + 2*x^2 + 5)^(3/2)",
+        "x/(x^4 + 1)^(5/2)",
+        "x*(x^4 + 1)^(5/2)",
+        "x/(x^4 + x^2 + 1)^(5/2)",
+        "x*(x^4 + x^2 + 1)^(5/2)",
+        "x/(x^4 + x^2 + 1)^(7/2)",
+        "x*(x^4 + x^2 + 1)^(7/2)",
+        "x*(x^2 + 1)/(x^4 + x^2 + 1)^(1/2)",
+        "x*(x^2 + 1)*(x^4 + x^2 + 1)^(1/2)",
+        "x*(x^2 + 2)/(x^4 + 4*x^2 + 1)^(1/2)",
+        "x*(x^2 + 2)*(x^4 + 4*x^2 + 1)^(1/2)",
     ];
 
-    assert_eq!(cases.len(), 4, "expected 4 quartic radical cases");
+    assert_eq!(cases.len(), 40, "expected 40 quartic radical cases");
     for input in cases {
         assert_numeric_roundtrip(input, &samples);
     }
@@ -1520,6 +1580,37 @@ fn elliptic_non_elementary_cases() {
         "1/(x^4 + 1)^(1/2)",
         "x^2/(x^4 + 1)^(1/2)",
     ];
+    for input in cases {
+        assert_non_elementary(input, NonElementaryKind::SpecialFunctionNeeded);
+    }
+}
+
+#[test]
+fn higher_degree_radical_non_elementary_cases() {
+    let cases = vec![
+        "(x^6 + 1)^(1/2)",
+        "1/(x^6 + 1)^(1/2)",
+        "x/(x^6 + 1)^(1/2)",
+        "x^2/(x^6 + 1)^(1/2)",
+        "(x^6 + x^3 + 1)^(1/2)",
+        "1/(x^6 + x^3 + 1)^(1/2)",
+        "(x^6 + x^4 + 1)^(1/2)",
+        "1/(x^6 + x^4 + 1)^(1/2)",
+        "x/(x^6 + x^4 + 1)^(1/2)",
+        "(x^8 + 1)^(1/2)",
+        "1/(x^8 + 1)^(1/2)",
+        "(x^8 + x^4 + 1)^(1/2)",
+        "1/(x^8 + x^4 + 1)^(1/2)",
+        "(x^5 + x + 1)^(1/2)",
+        "1/(x^5 + x + 1)^(1/2)",
+        "(x^4 + 1)^(1/3)",
+        "1/(x^4 + 1)^(1/3)",
+        "(x^2 + 1)^(1/3)",
+        "(x^2 + 1)^(2/3)",
+        "(x^4 + x^2 + 1)^(2/3)",
+    ];
+
+    assert_eq!(cases.len(), 20, "expected 20 higher-degree radical cases");
     for input in cases {
         assert_non_elementary(input, NonElementaryKind::SpecialFunctionNeeded);
     }
@@ -2097,6 +2188,89 @@ fn trig_exp_log_nontrivial_suite() {
     ];
 
     assert_eq!(cases.len(), 41, "expected 41 non-trivial trig/exp/log cases");
+    for (input, samples) in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn rational_trig_half_angle_common_roundtrips() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        ("1/(1+sin(x))", vec![-0.6, -0.3, 0.2, 0.6]),
+        ("1/(1+cos(x))", vec![-0.6, -0.3, 0.2, 0.6]),
+        ("sin(x)/(1+cos(x))", vec![-0.6, -0.3, 0.2, 0.6]),
+        ("cos(x)/(1+sin(x))", vec![-0.6, -0.3, 0.2, 0.6]),
+        ("sin(x)/cos(x)", vec![-0.6, -0.3, 0.3, 0.6]),
+        ("(1 - cos(x))/sin(x)", vec![-0.7, -0.4, 0.4, 0.7]),
+    ];
+
+    assert_eq!(cases.len(), 6, "expected 6 common rational trig cases");
+    for (input, samples) in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn rational_trig_half_angle_uncommon_roundtrips() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        (
+            "(2 + 3*sin(x) - cos(x)) / (4 + 2*sin(x) + cos(x))",
+            vec![-0.9, -0.4, 0.0, 0.4, 0.9],
+        ),
+        (
+            "(sin(x)^2 + 2*sin(x)*cos(x) + cos(x)^2) / (2 + sin(x))",
+            vec![-0.9, -0.4, 0.0, 0.4, 0.9],
+        ),
+        (
+            "(1 + sin(x)^2) / (2 - sin(x))",
+            vec![-0.9, -0.4, 0.0, 0.4, 0.9],
+        ),
+        (
+            "((sin(x) + cos(x))^2) / (3 - 2*cos(x))",
+            vec![-0.9, -0.4, 0.0, 0.4, 0.9],
+        ),
+    ];
+
+    assert_eq!(cases.len(), 4, "expected 4 uncommon rational trig cases");
+    for (input, samples) in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn rational_trig_half_angle_difficult_roundtrips() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        ("1/(1+sin(2*x))^2", vec![-0.4, -0.2, 0.2, 0.4]),
+        (
+            "(sin(2*x)^3 + cos(2*x)^2)/(2 + sin(2*x))",
+            vec![-0.4, -0.2, 0.2, 0.4],
+        ),
+        (
+            "((sin(3*x) + cos(3*x))^2) / (3 - 2*cos(3*x))",
+            vec![-0.4, -0.2, 0.2, 0.4],
+        ),
+        (
+            "sin(2*x)^2 / (1 + cos(2*x))^2",
+            vec![-0.4, -0.2, 0.2, 0.4],
+        ),
+    ];
+
+    assert_eq!(cases.len(), 4, "expected 4 difficult rational trig cases");
+    for (input, samples) in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn rational_hyperbolic_half_angle_roundtrips() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        ("1/(1+sinh(x))", vec![-0.6, -0.2, 0.2, 0.6]),
+        ("sinh(x)/(1+cosh(x))", vec![-0.6, -0.2, 0.2, 0.6]),
+        ("1/(cosh(x) + sinh(x))", vec![-0.6, -0.2, 0.2, 0.6]),
+        ("1/(1+sinh(x)^2)", vec![-0.6, -0.2, 0.2, 0.6]),
+    ];
+
+    assert_eq!(cases.len(), 4, "expected 4 rational hyperbolic cases");
     for (input, samples) in cases {
         assert_numeric_roundtrip(input, &samples);
     }
