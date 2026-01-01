@@ -10,9 +10,10 @@ use crate::calculus::differentiate;
 use crate::expr::{Expr, Rational};
 use crate::factor::Poly;
 use crate::format::expr::pretty;
+use crate::polynomial::Polynomial;
 use crate::simplify::{normalize, simplify, simplify_fully};
 use num_traits::{One, Zero};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 pub(crate) use common::{coeff_of_var, linear_parts};
 pub use exponential::is_exp;
@@ -22,6 +23,8 @@ pub use rational::is_rational;
 pub use trig::is_trig;
 
 const TRANSFORM_SIZE_LIMIT: usize = 96;
+const TABULAR_STEP_LIMIT: usize = 8;
+type ExprPoly = Polynomial<Expr>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntegrandKind {
@@ -434,7 +437,8 @@ fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
                 .or_else(|| rational::integrate(expr, var))
                 .or_else(|| trig::integrate(expr, var))
                 .or_else(|| exponential::integrate(expr, var))
-                .or_else(|| logarithmic::integrate(expr, var)),
+                .or_else(|| logarithmic::integrate(expr, var))
+                .or_else(|| integrate_log_derivative(expr, var)),
         },
         Expr::Mul(a, b) => match (&**a, &**b) {
             (Expr::Constant(c), other) | (other, Expr::Constant(c)) => integrate_direct(other, var)
@@ -443,13 +447,15 @@ fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
                 .or_else(|| rational::integrate(expr, var))
                 .or_else(|| trig::integrate(expr, var))
                 .or_else(|| exponential::integrate(expr, var))
-                .or_else(|| logarithmic::integrate(expr, var)),
+                .or_else(|| logarithmic::integrate(expr, var))
+                .or_else(|| integrate_log_derivative(expr, var)),
         },
         _ => polynomial::integrate(expr, var)
             .or_else(|| rational::integrate(expr, var))
             .or_else(|| trig::integrate(expr, var))
             .or_else(|| exponential::integrate(expr, var))
-            .or_else(|| logarithmic::integrate(expr, var)),
+            .or_else(|| logarithmic::integrate(expr, var))
+            .or_else(|| integrate_log_derivative(expr, var)),
     };
     if direct.is_some() {
         return direct;
@@ -530,6 +536,9 @@ fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
     if is_zero_expr(&const_expr) {
         return Some(Expr::Constant(Rational::zero()));
     }
+    if let Some(result) = integrate_log_derivative(expr, var) {
+        return Some(result);
+    }
 
     for (idx, factor) in factors.iter().enumerate() {
         let Some(inner) = inner_candidate(factor) else {
@@ -545,10 +554,10 @@ fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
             .enumerate()
             .filter_map(|(i, f)| if i == idx { None } else { Some(f.clone()) })
             .collect();
-        let remaining_expr = apply_constant_factor(
+        let remaining_expr = simplify_fully(apply_constant_factor(
             const_expr.clone(),
             rebuild_product(Rational::one(), remaining.clone()),
-        );
+        ));
 
         let multiplier = {
             let ratio_expr = simplify_fully(Expr::Div(
@@ -575,6 +584,24 @@ fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
     None
 }
 
+fn integrate_log_derivative(expr: &Expr, var: &str) -> Option<Expr> {
+    let (num, den) = as_rational_expr(expr);
+    let num = simplify_fully(num);
+    let den = simplify_fully(den);
+    if !contains_var(&den, var) {
+        return None;
+    }
+    let den_derivative = simplify_fully(differentiate(var, &den));
+    if den_derivative.is_zero() {
+        return None;
+    }
+    let ratio = constant_ratio(&num, &den_derivative, var)?;
+    if contains_var(&ratio, var) {
+        return None;
+    }
+    Some(simplify(Expr::Mul(ratio.boxed(), log_abs(den).boxed())))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LiateRank {
     Log,
@@ -587,9 +614,25 @@ enum LiateRank {
 fn factor_rank(expr: &Expr, var: &str) -> Option<LiateRank> {
     match expr {
         Expr::Log(_) => Some(LiateRank::Log),
-        Expr::Atan(_) | Expr::Asin(_) | Expr::Acos(_) => Some(LiateRank::InverseTrig),
+        Expr::Atan(_)
+        | Expr::Asin(_)
+        | Expr::Acos(_)
+        | Expr::Asec(_)
+        | Expr::Acsc(_)
+        | Expr::Acot(_)
+        | Expr::Asinh(_)
+        | Expr::Acosh(_)
+        | Expr::Atanh(_) => Some(LiateRank::InverseTrig),
         e if polynomial::is_polynomial(e, var) => Some(LiateRank::Algebraic),
-        Expr::Sin(_) | Expr::Cos(_) | Expr::Tan(_) => Some(LiateRank::Trig),
+        Expr::Sin(_)
+        | Expr::Cos(_)
+        | Expr::Tan(_)
+        | Expr::Sec(_)
+        | Expr::Csc(_)
+        | Expr::Cot(_)
+        | Expr::Sinh(_)
+        | Expr::Cosh(_)
+        | Expr::Tanh(_) => Some(LiateRank::Trig),
         Expr::Exp(_) => Some(LiateRank::Exponential),
         Expr::Pow(base, _) => factor_rank(base, var),
         _ => None,
@@ -604,6 +647,141 @@ fn integrate_with_respect_to_inner(outer: &Expr, inner: &Expr) -> Option<Expr> {
         Expr::Tan(_) => Some(Expr::Neg(
             log_abs(Expr::Cos(inner.clone().boxed())).boxed(),
         )),
+        Expr::Sec(_) => {
+            let sum = Expr::Add(
+                Expr::Sec(inner.clone().boxed()).boxed(),
+                Expr::Tan(inner.clone().boxed()).boxed(),
+            );
+            Some(log_abs(sum))
+        }
+        Expr::Csc(_) => {
+            let diff = Expr::Sub(
+                Expr::Csc(inner.clone().boxed()).boxed(),
+                Expr::Cot(inner.clone().boxed()).boxed(),
+            );
+            Some(log_abs(diff))
+        }
+        Expr::Cot(_) => Some(log_abs(Expr::Sin(inner.clone().boxed()))),
+        Expr::Sinh(_) => Some(Expr::Cosh(inner.clone().boxed())),
+        Expr::Cosh(_) => Some(Expr::Sinh(inner.clone().boxed())),
+        Expr::Tanh(_) => Some(log_abs(Expr::Cosh(inner.clone().boxed()))),
+        Expr::Asec(_) => {
+            let sqrt = Expr::Pow(
+                Expr::Sub(
+                    Expr::Pow(
+                        inner.clone().boxed(),
+                        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::one()).boxed(),
+                )
+                .boxed(),
+                Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                    .boxed(),
+            );
+            let log_term = log_abs(Expr::Add(inner.clone().boxed(), sqrt.boxed()));
+            Some(Expr::Sub(
+                Expr::Mul(inner.clone().boxed(), Expr::Asec(inner.clone().boxed()).boxed()).boxed(),
+                log_term.boxed(),
+            ))
+        }
+        Expr::Acsc(_) => {
+            let sqrt = Expr::Pow(
+                Expr::Sub(
+                    Expr::Pow(
+                        inner.clone().boxed(),
+                        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::one()).boxed(),
+                )
+                .boxed(),
+                Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                    .boxed(),
+            );
+            let log_term = log_abs(Expr::Add(inner.clone().boxed(), sqrt.boxed()));
+            Some(Expr::Add(
+                Expr::Mul(inner.clone().boxed(), Expr::Acsc(inner.clone().boxed()).boxed()).boxed(),
+                log_term.boxed(),
+            ))
+        }
+        Expr::Acot(_) => {
+            let log_term = log_abs(Expr::Add(
+                Expr::Constant(Rational::one()).boxed(),
+                Expr::Pow(
+                    inner.clone().boxed(),
+                    Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                )
+                .boxed(),
+            ));
+            Some(Expr::Add(
+                Expr::Mul(inner.clone().boxed(), Expr::Acot(inner.clone().boxed()).boxed()).boxed(),
+                Expr::Div(
+                    log_term.boxed(),
+                    Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                )
+                .boxed(),
+            ))
+        }
+        Expr::Asinh(_) => {
+            let sqrt = Expr::Pow(
+                Expr::Add(
+                    Expr::Pow(
+                        inner.clone().boxed(),
+                        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::one()).boxed(),
+                )
+                .boxed(),
+                Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                    .boxed(),
+            );
+            Some(Expr::Sub(
+                Expr::Mul(inner.clone().boxed(), Expr::Asinh(inner.clone().boxed()).boxed())
+                    .boxed(),
+                sqrt.boxed(),
+            ))
+        }
+        Expr::Acosh(_) => {
+            let sqrt = Expr::Pow(
+                Expr::Sub(
+                    Expr::Pow(
+                        inner.clone().boxed(),
+                        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::one()).boxed(),
+                )
+                .boxed(),
+                Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                    .boxed(),
+            );
+            Some(Expr::Sub(
+                Expr::Mul(inner.clone().boxed(), Expr::Acosh(inner.clone().boxed()).boxed())
+                    .boxed(),
+                sqrt.boxed(),
+            ))
+        }
+        Expr::Atanh(_) => {
+            let log_term = log_abs(Expr::Sub(
+                Expr::Constant(Rational::one()).boxed(),
+                Expr::Pow(
+                    inner.clone().boxed(),
+                    Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                )
+                .boxed(),
+            ));
+            Some(Expr::Add(
+                Expr::Mul(inner.clone().boxed(), Expr::Atanh(inner.clone().boxed()).boxed())
+                    .boxed(),
+                Expr::Div(
+                    log_term.boxed(),
+                    Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                )
+                .boxed(),
+            ))
+        }
         Expr::Log(_) => Some(Expr::Sub(
             Expr::Mul(
                 inner.clone().boxed(),
@@ -639,32 +817,42 @@ fn integrate_with_respect_to_inner(outer: &Expr, inner: &Expr) -> Option<Expr> {
 }
 
 fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
-    if expr == target {
+    let expr_norm = simplify_fully(expr.clone());
+    let target_norm = simplify_fully(target.clone());
+
+    if expr_norm == target_norm {
         return Some(Expr::Constant(Rational::one()));
     }
-    if let Expr::Mul(a, b) = expr {
+
+    if let Expr::Mul(a, b) = &expr_norm {
         match (&**a, &**b) {
-            (Expr::Constant(c), other) if other == target => {
+            (Expr::Constant(c), other) if other == &target_norm => {
                 return Some(Expr::Constant(c.clone()))
             }
-            (other, Expr::Constant(c)) if other == target => {
+            (other, Expr::Constant(c)) if other == &target_norm => {
                 return Some(Expr::Constant(c.clone()))
             }
-            (other, expr_const) if other == target && !contains_var(expr_const, var) => {
+            (other, expr_const) if other == &target_norm && !contains_var(expr_const, var) => {
                 return Some(expr_const.clone());
             }
-            (expr_const, other) if other == target && !contains_var(expr_const, var) => {
+            (expr_const, other) if other == &target_norm && !contains_var(expr_const, var) => {
                 return Some(expr_const.clone());
             }
             _ => {}
         }
     }
-    let quotient = simplify_fully(Expr::Div(expr.clone().boxed(), target.clone().boxed()));
+    if let Some(ratio) = rational_constant_ratio(&expr_norm, &target_norm, var) {
+        return Some(ratio);
+    }
+    if let Some(ratio) = algebraic_constant_ratio(&expr_norm, &target_norm, var) {
+        return Some(ratio);
+    }
+    let quotient = simplify_fully(Expr::Div(expr_norm.clone().boxed(), target_norm.clone().boxed()));
     if !contains_var(&quotient, var) {
         return Some(quotient);
     }
-    let (expr_const, mut expr_factors) = split_constant_factors(expr, var);
-    let (target_const, mut target_factors) = split_constant_factors(target, var);
+    let (expr_const, mut expr_factors) = split_constant_factors(&expr_norm, var);
+    let (target_const, mut target_factors) = split_constant_factors(&target_norm, var);
     expr_factors.sort();
     target_factors.sort();
     if expr_factors == target_factors {
@@ -673,10 +861,7 @@ fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
             target_const.boxed(),
         )));
     }
-    if contains_other_vars(expr, var) || contains_other_vars(target, var) {
-        return None;
-    }
-    rational_constant_ratio(expr, target, var)
+    None
 }
 
 fn rational_constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
@@ -706,6 +891,45 @@ fn rational_constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr
     let scale = numerator.leading_coeff() / denominator.leading_coeff();
     if numerator == denominator.scale(&scale) {
         Some(Expr::Constant(scale))
+    } else {
+        None
+    }
+}
+
+fn algebraic_constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
+    let (expr_num, expr_den) = as_rational_expr_polys(expr, var)?;
+    let (target_num, target_den) = as_rational_expr_polys(target, var)?;
+
+    if poly_expr_is_zero(&target_num) {
+        return None;
+    }
+
+    let numerator = expr_num * target_den;
+    let denominator = expr_den * target_num;
+    if poly_expr_is_zero(&denominator) {
+        return None;
+    }
+
+    if poly_expr_is_zero(&numerator) {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+
+    let numerator_deg = poly_expr_degree(&numerator)?;
+    let denominator_deg = poly_expr_degree(&denominator)?;
+    if numerator_deg != denominator_deg {
+        return None;
+    }
+
+    let numerator_lc = poly_expr_leading_coeff(&numerator)?;
+    let denominator_lc = poly_expr_leading_coeff(&denominator)?;
+    let ratio = simplify_fully(Expr::Div(numerator_lc.boxed(), denominator_lc.boxed()));
+    if contains_var(&ratio, var) {
+        return None;
+    }
+
+    let scaled = denominator.scale(&ratio);
+    if poly_expr_eq(&numerator, &scaled) {
+        Some(ratio)
     } else {
         None
     }
@@ -807,6 +1031,57 @@ pub(crate) fn flatten_product(expr: &Expr) -> (Rational, Vec<Expr>) {
         }
         other => (Rational::one(), vec![other.clone()]),
     }
+}
+
+fn as_rational_expr_polys(expr: &Expr, var: &str) -> Option<(ExprPoly, ExprPoly)> {
+    let (num_expr, den_expr) = as_rational_expr(expr);
+    let num_poly = ExprPoly::from_expr(&num_expr, var)?;
+    let den_poly = ExprPoly::from_expr(&den_expr, var)?;
+    if poly_expr_is_zero(&den_poly) {
+        return None;
+    }
+    Some((num_poly, den_poly))
+}
+
+fn poly_expr_degree(poly: &ExprPoly) -> Option<usize> {
+    let mut degree = None;
+    for (exp, coeff) in poly.coeff_entries() {
+        if !is_zero_expr(&coeff) {
+            degree = Some(exp);
+        }
+    }
+    degree
+}
+
+fn poly_expr_leading_coeff(poly: &ExprPoly) -> Option<Expr> {
+    let degree = poly_expr_degree(poly)?;
+    Some(poly.coeff(degree))
+}
+
+fn poly_expr_is_zero(poly: &ExprPoly) -> bool {
+    poly_expr_degree(poly).is_none()
+}
+
+fn poly_expr_eq(lhs: &ExprPoly, rhs: &ExprPoly) -> bool {
+    let mut exps = BTreeSet::new();
+    for (exp, _) in lhs.coeff_entries() {
+        exps.insert(exp);
+    }
+    for (exp, _) in rhs.coeff_entries() {
+        exps.insert(exp);
+    }
+    if exps.is_empty() {
+        return true;
+    }
+    for exp in exps {
+        let lhs_coeff = lhs.coeff(exp);
+        let rhs_coeff = rhs.coeff(exp);
+        let diff = Expr::Sub(lhs_coeff.boxed(), rhs_coeff.boxed());
+        if !is_zero_expr(&diff) {
+            return false;
+        }
+    }
+    true
 }
 
 pub(crate) fn rebuild_product(constant: Rational, mut factors: Vec<Expr>) -> Expr {
@@ -1010,9 +1285,26 @@ fn to_rational_candidate(constant: Rational, factors: &[Expr]) -> Option<Expr> {
 
 fn inner_candidate(expr: &Expr) -> Option<&Expr> {
     match expr {
-        Expr::Sin(arg) | Expr::Cos(arg) | Expr::Tan(arg) | Expr::Exp(arg) | Expr::Log(arg) => {
-            Some(arg)
-        }
+        Expr::Sin(arg)
+        | Expr::Cos(arg)
+        | Expr::Tan(arg)
+        | Expr::Sec(arg)
+        | Expr::Csc(arg)
+        | Expr::Cot(arg)
+        | Expr::Sinh(arg)
+        | Expr::Cosh(arg)
+        | Expr::Tanh(arg)
+        | Expr::Atan(arg)
+        | Expr::Asin(arg)
+        | Expr::Acos(arg)
+        | Expr::Asec(arg)
+        | Expr::Acsc(arg)
+        | Expr::Acot(arg)
+        | Expr::Asinh(arg)
+        | Expr::Acosh(arg)
+        | Expr::Atanh(arg)
+        | Expr::Exp(arg)
+        | Expr::Log(arg) => Some(arg),
         Expr::Pow(base, exp) => match &**exp {
             Expr::Constant(_) => Some(base),
             Expr::Neg(inner) if matches!(**inner, Expr::Constant(_)) => Some(base),
@@ -1081,9 +1373,32 @@ mod substitution_internal_tests {
             other => panic!("expected integration, got {other:?}"),
         }
     }
+
+    #[test]
+    fn constant_ratio_with_parameters() {
+        let numerator = parse_expr("2*x + y").unwrap();
+        let denom = parse_expr("x^2 + y*x + 1").unwrap();
+        let derivative = simplify_fully(differentiate("x", &denom));
+        assert!(
+            constant_ratio(&numerator, &derivative, "x").is_some(),
+            "expected constant ratio with parameter coefficients"
+        );
+    }
+
+    #[test]
+    fn log_derivative_with_parameters() {
+        let expr = parse_expr("(2*x + y)/(x^2 + y*x + 1)").unwrap();
+        assert!(
+            integrate_log_derivative(&expr, "x").is_some(),
+            "expected log-derivative integration with parameter coefficients"
+        );
+    }
 }
 
 fn integration_by_parts(expr: &Expr, var: &str) -> Option<(Expr, String)> {
+    if let Some(result) = integration_by_parts_tabular(expr, var) {
+        return Some(result);
+    }
     let mut memo = HashMap::new();
     integrate_by_parts_recursive(expr, var, &mut memo)
 }
@@ -1095,6 +1410,11 @@ fn integrate_by_parts_recursive(
 ) -> Option<(Expr, String)> {
     if let Some(result) = memo.get(expr) {
         return result.clone().map(|r| (r, String::new()));
+    }
+
+    if let Some((result, note)) = integration_by_parts_tabular(expr, var) {
+        memo.insert(expr.clone(), Some(result.clone()));
+        return Some((result, note));
     }
 
     let (const_expr, factors) = split_constant_factors(expr, var);
@@ -1195,6 +1515,124 @@ fn integrate_by_parts_recursive(
     }
 
     None
+}
+
+fn integration_by_parts_tabular(expr: &Expr, var: &str) -> Option<(Expr, String)> {
+    let (const_expr, factors) = split_constant_factors(expr, var);
+    if is_zero_expr(&const_expr) {
+        return Some((Expr::Constant(Rational::zero()), String::from("tabular-ibp")));
+    }
+    if !is_one_expr(&const_expr) {
+        let rest = rebuild_product(Rational::one(), factors.clone());
+        if let Some((result, note)) = integration_by_parts_tabular(&rest, var) {
+            let scaled = simplify(Expr::Mul(const_expr.boxed(), result.boxed()));
+            return Some((scaled, note));
+        }
+        return None;
+    }
+
+    let factors = combine_algebraic_factors(factors, var);
+    if factors.len() != 2 {
+        return None;
+    }
+
+    let (poly_factor, other_factor) = if polynomial::is_polynomial(&factors[0], var) {
+        (factors[0].clone(), factors[1].clone())
+    } else if polynomial::is_polynomial(&factors[1], var) {
+        (factors[1].clone(), factors[0].clone())
+    } else {
+        return None;
+    };
+
+    let degree = polynomial::degree(&poly_factor, var)?;
+    if degree == 0 || degree > TABULAR_STEP_LIMIT {
+        return None;
+    }
+
+    if polynomial::is_polynomial(&other_factor, var) {
+        return None;
+    }
+
+    if let Expr::Log(arg) = &other_factor {
+        let result = integrate_polynomial_times_log(&poly_factor, arg, var)?;
+        return Some((result, String::from("tabular-ibp-log")));
+    }
+
+    if !matches!(
+        other_factor,
+        Expr::Exp(_)
+            | Expr::Sin(_)
+            | Expr::Cos(_)
+            | Expr::Sinh(_)
+            | Expr::Cosh(_)
+    ) {
+        return None;
+    }
+
+    let mut derivatives = Vec::new();
+    let mut current = poly_factor.clone();
+    for _ in 0..=degree {
+        if is_zero_expr(&current) {
+            break;
+        }
+        derivatives.push(simplify_fully(current.clone()));
+        current = simplify_fully(differentiate(var, &current));
+    }
+    if derivatives.is_empty() || derivatives.len() > TABULAR_STEP_LIMIT {
+        return None;
+    }
+
+    let mut integrals = Vec::new();
+    let mut kernel = other_factor.clone();
+    for _ in 0..derivatives.len() {
+        let next = integrate_basic(&kernel, var)?;
+        if expr_size(&next) > TRANSFORM_SIZE_LIMIT {
+            return None;
+        }
+        integrals.push(simplify(next.clone()));
+        kernel = next;
+    }
+
+    let mut terms = Vec::new();
+    for (idx, deriv) in derivatives.into_iter().enumerate() {
+        let term = Expr::Mul(deriv.boxed(), integrals[idx].clone().boxed());
+        let signed = if idx % 2 == 1 {
+            Expr::Neg(term.boxed())
+        } else {
+            term
+        };
+        terms.push(signed);
+    }
+    let result = simplify(
+        terms
+            .into_iter()
+            .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+            .unwrap(),
+    );
+
+    if expr_size(&result) > TRANSFORM_SIZE_LIMIT {
+        return None;
+    }
+
+    Some((result, String::from("tabular-ibp")))
+}
+
+fn integrate_polynomial_times_log(poly: &Expr, log_arg: &Expr, var: &str) -> Option<Expr> {
+    let base = match log_arg {
+        Expr::Abs(inner) => inner.as_ref().clone(),
+        _ => log_arg.clone(),
+    };
+    let (coef, _) = linear_parts(&base, var)?;
+    if is_zero_expr(&coef) {
+        return None;
+    }
+
+    let poly_integral = polynomial::integrate(poly, var)?;
+    let log_term = Expr::Mul(poly_integral.clone().boxed(), log_abs(base.clone()).boxed());
+    let ratio = simplify(Expr::Div(coef.boxed(), base.boxed()));
+    let vdu = simplify(Expr::Mul(poly_integral.boxed(), ratio.boxed()));
+    let vdu_integral = integrate_direct(&vdu, var)?;
+    Some(simplify(Expr::Sub(log_term.boxed(), vdu_integral.boxed())))
 }
 
 fn integrate_partial_fractions(expr: &Expr, var: &str) -> Option<Expr> {
@@ -1385,9 +1823,21 @@ fn expr_size(expr: &Expr) -> usize {
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
         | Expr::Atan(inner)
         | Expr::Asin(inner)
         | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
         | Expr::Exp(inner)
         | Expr::Log(inner)
         | Expr::Abs(inner) => expr_size(inner),
@@ -1414,34 +1864,24 @@ pub(crate) fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
         | Expr::Atan(inner)
         | Expr::Asin(inner)
         | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
         | Expr::Exp(inner)
         | Expr::Log(inner)
         | Expr::Abs(inner) => contains_var(inner, var),
-        Expr::Constant(_) => false,
-    }
-}
-
-fn contains_other_vars(expr: &Expr, var: &str) -> bool {
-    match expr {
-        Expr::Variable(v) => v != var,
-        Expr::Add(a, b)
-        | Expr::Sub(a, b)
-        | Expr::Mul(a, b)
-        | Expr::Div(a, b)
-        | Expr::Pow(a, b) => contains_other_vars(a, var) || contains_other_vars(b, var),
-        Expr::Neg(inner)
-        | Expr::Sin(inner)
-        | Expr::Cos(inner)
-        | Expr::Tan(inner)
-        | Expr::Atan(inner)
-        | Expr::Asin(inner)
-        | Expr::Acos(inner)
-        | Expr::Exp(inner)
-        | Expr::Log(inner)
-        | Expr::Abs(inner) => contains_other_vars(inner, var),
         Expr::Constant(_) => false,
     }
 }

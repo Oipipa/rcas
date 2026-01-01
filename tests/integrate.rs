@@ -20,9 +20,21 @@ fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
         | Expr::Atan(inner)
         | Expr::Asin(inner)
         | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
         | Expr::Exp(inner)
         | Expr::Log(inner)
         | Expr::Abs(inner) => contains_var(inner, var),
@@ -65,6 +77,27 @@ fn eval_polynomial(expr: &Expr, var: &str, x: &Rational, other: &Rational) -> Ra
         Expr::Mul(a, b) => eval_polynomial(a, var, x, other) * eval_polynomial(b, var, x, other),
         Expr::Div(a, b) => eval_polynomial(a, var, x, other) / eval_polynomial(b, var, x, other),
         Expr::Neg(inner) => -eval_polynomial(inner, var, x, other),
+        Expr::Sin(_)
+        | Expr::Cos(_)
+        | Expr::Tan(_)
+        | Expr::Sec(_)
+        | Expr::Csc(_)
+        | Expr::Cot(_)
+        | Expr::Atan(_)
+        | Expr::Asin(_)
+        | Expr::Acos(_)
+        | Expr::Asec(_)
+        | Expr::Acsc(_)
+        | Expr::Acot(_)
+        | Expr::Sinh(_)
+        | Expr::Cosh(_)
+        | Expr::Tanh(_)
+        | Expr::Asinh(_)
+        | Expr::Acosh(_)
+        | Expr::Atanh(_)
+        | Expr::Exp(_)
+        | Expr::Log(_)
+        | Expr::Abs(_) => panic!("non-polynomial evaluation requested"),
         Expr::Pow(base, exp) => {
             let base_val = eval_polynomial(base, var, x, other);
             let exponent = match &**exp {
@@ -97,7 +130,6 @@ fn eval_polynomial(expr: &Expr, var: &str, x: &Rational, other: &Rational) -> Ra
                 acc
             }
         }
-        _ => panic!("unexpected expression form in polynomial evaluation: {expr:?}"),
     }
 }
 
@@ -195,9 +227,27 @@ fn eval_expr_f64_with_default(
         Expr::Sin(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::sin),
         Expr::Cos(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::cos),
         Expr::Tan(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::tan),
+        Expr::Sec(inner) => eval_expr_f64_with_default(inner, var, x, default_other)
+            .map(|v| 1.0 / v.cos()),
+        Expr::Csc(inner) => eval_expr_f64_with_default(inner, var, x, default_other)
+            .map(|v| 1.0 / v.sin()),
+        Expr::Cot(inner) => eval_expr_f64_with_default(inner, var, x, default_other)
+            .map(|v| v.cos() / v.sin()),
         Expr::Atan(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::atan),
         Expr::Asin(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::asin),
         Expr::Acos(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::acos),
+        Expr::Asec(inner) => eval_expr_f64_with_default(inner, var, x, default_other)
+            .map(|v| (1.0 / v).acos()),
+        Expr::Acsc(inner) => eval_expr_f64_with_default(inner, var, x, default_other)
+            .map(|v| (1.0 / v).asin()),
+        Expr::Acot(inner) => eval_expr_f64_with_default(inner, var, x, default_other)
+            .map(|v| (1.0 / v).atan()),
+        Expr::Sinh(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::sinh),
+        Expr::Cosh(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::cosh),
+        Expr::Tanh(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::tanh),
+        Expr::Asinh(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::asinh),
+        Expr::Acosh(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::acosh),
+        Expr::Atanh(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::atanh),
         Expr::Exp(inner) => eval_expr_f64_with_default(inner, var, x, default_other).map(f64::exp),
         Expr::Log(inner) => {
             Some(
@@ -885,6 +935,11 @@ fn odd_and_cross_variable_integrals() {
         ("y", "exp((y + 1)/x)", "x*exp((y + 1)/x)"),
         ("y", "tan(y/x)/x", "-log(abs(cos(y/x)))"),
         (
+            "x",
+            "(2*x + y)/(x^2 + y*x + 1)",
+            "log(abs(x^2 + y*x + 1))",
+        ),
+        (
             "y",
             "(2*y + 3)/(y^2 + 3*y + 5)",
             "log(abs(y^2 + 3*y + 5))",
@@ -954,7 +1009,7 @@ fn odd_and_cross_variable_integrals() {
         ("y", "tan(3*y + x)", "-1/3*log(abs(cos(3*y + x)))"),
     ];
 
-    assert_eq!(cases.len(), 41, "expected 41 odd cases");
+    assert_eq!(cases.len(), 42, "expected 42 odd cases");
     for (var, input, expected) in cases {
         assert_integral_with_var(var, input, expected);
     }
@@ -1117,7 +1172,7 @@ fn rational_nontrivial_suite() {
         ("x/(x^2 + 1)^2", "-1/2*(x^2 + 1)^-1"),
         (
             "1/(x^2 + 1)^2",
-            "1/(4)^(1/2)*arctan((2*x)/(4)^(1/2)) + 2*x/(4*x^2 + 4)",
+            "1/2*x*(x^2 + 1)^-1 + 1/(4)^(1/2)*arctan((2*x)/(4)^(1/2))",
         ),
         (
             "1/((x + 1)*(x^2 + 1))",
@@ -1177,6 +1232,103 @@ fn rational_nontrivial_suite() {
     }
 
     for (input, samples) in roundtrip_cases {
+        assert_rational_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn rational_hermite_roundtrip_suite() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        ("1/(x-1)^3", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(2*x+1)/(x-2)^4", vec![-3.2, -1.4, 0.6, 2.5]),
+        ("(x^2+1)/(x+1)^3", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(3*x^2-2*x+5)/(x-3)^2", vec![-3.2, -1.4, 0.6, 2.5]),
+        ("(x^3+1)/(x+2)^4", vec![-3.2, -1.4, 0.6, 2.5]),
+        ("(x^2+3*x+2)/(x-1)^4", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(5*x-4)/(x+3)^3", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^4+2)/(x-2)^3", vec![-3.2, -1.4, 0.6, 2.5]),
+        ("(2*x^2+3*x+1)/(x+1)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^3-2*x+1)/(x+4)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("1/(x^2+1)^3", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x+1)/(x^2+1)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(2*x^2+3*x+4)/(x^2+1)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("x/(x^2+2*x+2)^3", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^2+1)/(x^2+2*x+2)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(3*x^2+2*x+1)/(x^2+4*x+5)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^3+1)/(x^2+1)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^2+2*x+2)/(x^2+4)^3", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(2*x+3)/(x^2+2)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^2-3)/(x^2+3*x+5)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("1/((x-1)^2*(x^2+1))", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x+2)/((x-1)^3*(x^2+1))", vec![-2.3, -0.8, 0.4, 1.9]),
+        (
+            "(x^2+1)/((x+1)^2*(x^2+1)^2)",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+        (
+            "(x^2+2*x+2)/((x+1)^2*(x^2+1)^2)",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+        (
+            "(2*x+1)/((x-2)^2*(x^2+4))",
+            vec![-3.2, -1.4, 0.6, 2.5],
+        ),
+        (
+            "(x^2+3*x+5)/((x+2)*(x^2+2*x+2)^2)",
+            vec![-3.2, -1.4, 0.6, 2.5],
+        ),
+        (
+            "(x^3+1)/((x-1)^2*(x^2+1))",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+        (
+            "(2*x^2+5*x+7)/((x+1)^3*(x^2+2))",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+        ("(x^2+4)/(x*(x^2+1)^2)", vec![-2.1, -0.9, 0.7, 2.4]),
+        (
+            "(x^3+2)/(x*(x-1)^2*(x^2+1))",
+            vec![-2.1, -0.9, 0.7, 2.4],
+        ),
+        ("1/(x^2-2)", vec![-2.5, -0.6, 0.6, 2.3]),
+        ("(x+1)/(x^2-2)", vec![-2.5, -0.6, 0.6, 2.3]),
+        ("1/(x^2+x-1)", vec![-2.4, -0.8, 0.2, 1.9]),
+        ("(2*x-1)/(x^2+x-1)", vec![-2.4, -0.8, 0.2, 1.9]),
+        ("1/(x^2-3*x+1)", vec![-2.4, -0.8, 0.2, 1.9]),
+        ("(x+3)/(x^2-3*x+1)", vec![-2.4, -0.8, 0.2, 1.9]),
+        ("1/(2*x^2+3*x-1)", vec![-2.5, -0.9, 0.6, 2.1]),
+        ("(x-2)/(2*x^2+3*x-1)", vec![-2.5, -0.9, 0.6, 2.1]),
+        ("1/(x^2-2)^2", vec![-2.5, -0.6, 0.6, 2.3]),
+        ("(x+1)/(x^2+x-1)^2", vec![-2.4, -0.8, 0.2, 1.9]),
+        (
+            "(x^4+2*x^3+3*x^2+4*x+5)/(x^3-1)",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+        ("(x^5+1)/(x^3+1)", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^4+1)/(x^4-1)", vec![-2.3, -0.8, 0.4, 1.9]),
+        (
+            "(x^5-2*x^3+1)/(x^2-1)^2",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+        ("(x^6+2*x^3+1)/(x^3+1)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^5+2*x^2+3)/(x^2+1)^2", vec![-2.3, -0.8, 0.4, 1.9]),
+        ("(x^6+3*x^2+1)/(x^2+1)^3", vec![-2.3, -0.8, 0.4, 1.9]),
+        (
+            "(x^4-3*x^2+2)/(x^2-1)^3",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+        (
+            "(x^5+4*x+1)/((x-2)*(x^2+1)^2)",
+            vec![-3.2, -1.4, 0.6, 2.5],
+        ),
+        (
+            "(x^6+2*x^4+3*x^2+1)/(x^2+2*x+2)^3",
+            vec![-2.3, -0.8, 0.4, 1.9],
+        ),
+    ];
+
+    assert_eq!(cases.len(), 50, "expected 50 Hermite rational cases");
+    for (input, samples) in cases {
         assert_rational_roundtrip(input, &samples);
     }
 }
@@ -1467,9 +1619,14 @@ fn parts_nontrivial_suite() {
         ("(x^3 + 1)*exp(3*x + 1)", vec![-1.0, 0.0, 1.0]),
         ("(x^2 + x)*(x + 1)*exp(x)", vec![-0.5, 0.0, 0.5]),
         ("(x^2 + 2*x + 3)*log(x + 3)", vec![-2.0, -1.0, 0.5]),
+        ("x^5*exp(x)", vec![-1.0, 0.0, 1.0]),
+        ("x^5*sin(x)", vec![-1.0, 0.0, 1.0]),
+        ("x^5*cos(x)", vec![-1.0, 0.0, 1.0]),
+        ("x^4*exp(2*x)", vec![-1.0, 0.0, 1.0]),
+        ("x^4*log(x)", vec![0.5, 1.0, 2.0]),
     ];
 
-    assert_eq!(cases.len(), 30, "expected 30 non-trivial parts cases");
+    assert_eq!(cases.len(), 35, "expected 35 non-trivial parts cases");
     for (input, samples) in cases {
         assert_parts_roundtrip(input, &samples);
     }
@@ -1563,9 +1720,29 @@ fn substitution_nontrivial_suite() {
             "4*(2*x + 1)*(x^2 + x + 1)^2*exp((x^2 + x + 1)^3)",
             "4/3*exp((x^2 + x + 1)^3)",
         ),
+        (
+            "6*(2*x + 1)*(x^2 + x + 1)^(1/2)",
+            "4*(x^2 + x + 1)^(3/2)",
+        ),
+        (
+            "2*(2*x + 1)*(x^2 + x + 1)^(-3/2)",
+            "-4*(x^2 + x + 1)^-1/2",
+        ),
+        (
+            "2*x*cos(x^2)*exp(sin(x^2))",
+            "exp(sin(x^2))",
+        ),
+        (
+            "2*x*exp(x^2)*sin(exp(x^2))",
+            "-cos(exp(x^2))",
+        ),
+        (
+            "2*x/(x^2 + 1)*log(log(x^2 + 1))",
+            "(log(x^2 + 1)*log(abs(log(x^2 + 1))) - log(x^2 + 1))",
+        ),
     ];
 
-    assert_eq!(cases.len(), 25, "expected 25 non-trivial substitution cases");
+    assert_eq!(cases.len(), 30, "expected 30 non-trivial substitution cases");
     for (input, expected) in cases {
         assert_substitution_integral(input, expected);
     }
@@ -1585,6 +1762,11 @@ fn trig_exp_log_trivial_suite() {
         ("sin(x)*cos(x)^2", "-1/3*cos(x)^3"),
         ("sin(x)^2*cos(x)^2", "1/8*x - 1/32*sin(4*x)"),
         ("tan(x)", "-1*log(abs(cos(x)))"),
+        ("sec(x)", "log(abs(sec(x) + tan(x)))"),
+        ("csc(x)", "log(abs(csc(x) - cot(x)))"),
+        ("cot(x)", "log(abs(sin(x)))"),
+        ("sec(x)^2", "tan(x)"),
+        ("csc(x)^2", "-cot(x)"),
         ("exp(2*x)", "1/2*exp(2*x)"),
         ("exp(3*x)", "1/3*exp(3*x)"),
         ("exp(-x)", "-1*exp(-x)"),
@@ -1605,9 +1787,18 @@ fn trig_exp_log_trivial_suite() {
             "1/2*((2*x + 1)*arcsin(2*x + 1) + (1 - (2*x + 1)^2)^(1/2))",
         ),
         ("cos(2*x)*sin(2*x)", "-1/4*cos(2*x)^2"),
+        ("sinh(2*x)", "1/2*cosh(2*x)"),
+        ("cosh(3*x)", "1/3*sinh(3*x)"),
+        ("tanh(2*x + 1)", "1/2*log(abs(cosh(2*x + 1)))"),
+        ("asinh(x)", "x*asinh(x) - (x^2 + 1)^(1/2)"),
+        ("acosh(x)", "x*acosh(x) - (x^2 - 1)^(1/2)"),
+        ("atanh(x)", "x*atanh(x) + 1/2*log(abs(1 - x^2))"),
+        ("arcsec(x)", "x*arcsec(x) - log(abs(x + (x^2 - 1)^(1/2)))"),
+        ("arccsc(x)", "x*arccsc(x) + log(abs(x + (x^2 - 1)^(1/2)))"),
+        ("arccot(x)", "x*arccot(x) + 1/2*log(abs(x^2 + 1))"),
     ];
 
-    assert_eq!(cases.len(), 25, "expected 25 trivial trig/exp/log cases");
+    assert_eq!(cases.len(), 39, "expected 39 trivial trig/exp/log cases");
     for (input, expected) in cases {
         assert_integral_expected(input, expected);
     }
@@ -1641,9 +1832,25 @@ fn trig_exp_log_nontrivial_suite() {
         ("cos(x)^6", vec![-0.5, 0.0, 0.5]),
         ("sin(2*x)^4", vec![-0.5, 0.0, 0.5]),
         ("cos(2*x)^4", vec![-0.5, 0.0, 0.5]),
+        ("sec(x)", vec![0.2, 0.4, 0.6]),
+        ("csc(x)", vec![0.4, 0.8, 1.2]),
+        ("cot(x)", vec![0.4, 0.8, 1.2]),
+        ("sec(x)^2", vec![0.2, 0.4, 0.6]),
+        ("csc(x)^2", vec![0.4, 0.8, 1.2]),
+        ("sec(2*x + 1)", vec![-0.2, 0.0, 0.2]),
+        ("csc(2*x + 1)", vec![-0.2, 0.0, 0.2]),
+        ("sinh(2*x - 1)", vec![-0.5, 0.0, 0.5]),
+        ("cosh(2*x + 1)", vec![-0.5, 0.0, 0.5]),
+        ("tanh(3*x - 1)", vec![-0.3, 0.0, 0.3]),
+        ("asinh(x + 1)", vec![-0.5, 0.0, 0.5]),
+        ("acosh(x + 2)", vec![-0.5, 0.0, 0.5]),
+        ("atanh(x/2)", vec![-0.5, 0.0, 0.5]),
+        ("arcsec(x + 2)", vec![-0.5, 0.0, 0.5]),
+        ("arccsc(x + 2)", vec![-0.5, 0.0, 0.5]),
+        ("arccot(2*x + 1)", vec![-0.5, 0.0, 0.5]),
     ];
 
-    assert_eq!(cases.len(), 25, "expected 25 non-trivial trig/exp/log cases");
+    assert_eq!(cases.len(), 41, "expected 41 non-trivial trig/exp/log cases");
     for (input, samples) in cases {
         assert_numeric_roundtrip(input, &samples);
     }

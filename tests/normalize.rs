@@ -80,6 +80,10 @@ fn canonicalization_nontrivial_cases() {
         ("(2*x + 2)^2/(2*(x + 1))", "2*(x + 1)"),
         ("(x + 1)^3/(x + 1)", "(x + 1)^2"),
         ("(x + 1)^2*(x + 1)^-1", "x + 1"),
+        ("(x^2 - 1)/(x - 1)", "x + 1"),
+        ("(x^2 + 2*x + 1)/(x + 1)", "x + 1"),
+        ("(1 - x^2)/(x - 1)", "-1*(x + 1)"),
+        ("(2*x^2 + 2*x)/(4*x)", "1/2*(x + 1)"),
         ("sin(2*x + 4) + sin(4 + 2*x)", "2*sin(2*x + 4)"),
         ("cos(3 + x) + cos(x + 3)", "2*cos(x + 3)"),
         ("log(2 + x) + log(x + 2)", "2*log(x + 2)"),
@@ -87,7 +91,7 @@ fn canonicalization_nontrivial_cases() {
         ("tan(1 + 2*x) - tan(2*x + 1)", "0"),
     ];
 
-    assert_eq!(expected_cases.len(), 15, "expected 15 targeted cases");
+    assert_eq!(expected_cases.len(), 19, "expected 19 targeted cases");
     for (input, expected) in expected_cases {
         expect_normalized(input, expected);
     }
@@ -105,6 +109,9 @@ fn canonicalization_nontrivial_cases() {
         "((x*y)^3)/(x^2*y)",
         "(x + 1)^2/(2*(x + 1))",
         "(2*x + 2)^-1 + (2*x + 2)^-1",
+        "(x^2 - 1)/(x - 1)",
+        "(1 - x^2)/(x - 1)",
+        "(2*x^2 + 2*x)/(4*x)",
         "exp(log(x))",
         "log(abs(-x))",
         "sin(cos(x + 1) + 2)",
@@ -120,7 +127,7 @@ fn canonicalization_nontrivial_cases() {
         "(3*x + 6)^-1*(3*x + 6)^-1",
     ];
 
-    assert_eq!(idempotent_inputs.len(), 25, "expected 25 idempotence inputs");
+    assert_eq!(idempotent_inputs.len(), 28, "expected 28 idempotence inputs");
     for input in idempotent_inputs {
         let first = normalized(input);
         let second = simplify_fully(normalize(first.clone()));

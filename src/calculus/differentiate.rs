@@ -40,6 +40,30 @@ impl<'a> Differentiator<'a> {
                 );
                 simplify(Expr::Mul(da.boxed(), sec2.boxed()))
             }
+            Expr::Sec(a) => {
+                let da = self.strip_one(self.derive(a));
+                let factor = Expr::Mul(
+                    Expr::Sec(a.clone()).boxed(),
+                    Expr::Tan(a.clone()).boxed(),
+                );
+                simplify(Expr::Mul(da.boxed(), factor.boxed()))
+            }
+            Expr::Csc(a) => {
+                let da = self.strip_one(self.derive(a));
+                let factor = Expr::Mul(
+                    Expr::Csc(a.clone()).boxed(),
+                    Expr::Cot(a.clone()).boxed(),
+                );
+                simplify(Expr::Neg(Expr::Mul(da.boxed(), factor.boxed()).boxed()))
+            }
+            Expr::Cot(a) => {
+                let da = self.strip_one(self.derive(a));
+                let csc2 = Expr::Pow(
+                    Expr::Csc(a.clone()).boxed(),
+                    Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                );
+                simplify(Expr::Neg(Expr::Mul(da.boxed(), csc2.boxed()).boxed()))
+            }
             Expr::Atan(a) => {
                 let da = self.strip_one(self.derive(a));
                 let denom = Expr::Add(
@@ -87,6 +111,117 @@ impl<'a> Differentiator<'a> {
                 simplify(Expr::Neg(
                     Expr::Div(da.boxed(), denom.boxed()).boxed(),
                 ))
+            }
+            Expr::Asec(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Mul(
+                    Expr::Abs(a.clone().boxed()).boxed(),
+                    Expr::Pow(
+                        Expr::Sub(
+                            Expr::Pow(
+                                a.clone().boxed(),
+                                Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                            )
+                            .boxed(),
+                            one().boxed(),
+                        )
+                        .boxed(),
+                        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                            .boxed(),
+                    )
+                    .boxed(),
+                );
+                simplify(Expr::Div(da.boxed(), denom.boxed()))
+            }
+            Expr::Acsc(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Mul(
+                    Expr::Abs(a.clone().boxed()).boxed(),
+                    Expr::Pow(
+                        Expr::Sub(
+                            Expr::Pow(
+                                a.clone().boxed(),
+                                Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                            )
+                            .boxed(),
+                            one().boxed(),
+                        )
+                        .boxed(),
+                        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                            .boxed(),
+                    )
+                    .boxed(),
+                );
+                simplify(Expr::Neg(Expr::Div(da.boxed(), denom.boxed()).boxed()))
+            }
+            Expr::Acot(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Add(
+                    one().boxed(),
+                    Expr::Pow(
+                        a.clone().boxed(),
+                        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                    )
+                    .boxed(),
+                );
+                simplify(Expr::Neg(Expr::Div(da.boxed(), denom.boxed()).boxed()))
+            }
+
+            Expr::Sinh(a) => self.chain_rule(a, |inner| Expr::Cosh(inner.boxed())),
+            Expr::Cosh(a) => self.chain_rule(a, |inner| Expr::Sinh(inner.boxed())),
+            Expr::Tanh(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Pow(
+                    Expr::Cosh(a.clone()).boxed(),
+                    Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                );
+                simplify(Expr::Div(da.boxed(), denom.boxed()))
+            }
+            Expr::Asinh(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Pow(
+                    Expr::Add(
+                        Expr::Pow(
+                            a.clone().boxed(),
+                            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                        )
+                        .boxed(),
+                        one().boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                        .boxed(),
+                );
+                simplify(Expr::Div(da.boxed(), denom.boxed()))
+            }
+            Expr::Acosh(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Pow(
+                    Expr::Sub(
+                        Expr::Pow(
+                            a.clone().boxed(),
+                            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                        )
+                        .boxed(),
+                        one().boxed(),
+                    )
+                    .boxed(),
+                    Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                        .boxed(),
+                );
+                simplify(Expr::Div(da.boxed(), denom.boxed()))
+            }
+            Expr::Atanh(a) => {
+                let da = self.strip_one(self.derive(a));
+                let denom = Expr::Sub(
+                    one().boxed(),
+                    Expr::Pow(
+                        a.clone().boxed(),
+                        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                    )
+                    .boxed(),
+                );
+                simplify(Expr::Div(da.boxed(), denom.boxed()))
             }
 
             Expr::Exp(a) => simplify(Expr::Mul(

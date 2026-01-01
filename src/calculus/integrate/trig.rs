@@ -11,9 +11,21 @@ pub fn is_trig(expr: &Expr) -> bool {
         Expr::Sin(_)
             | Expr::Cos(_)
             | Expr::Tan(_)
+            | Expr::Sec(_)
+            | Expr::Csc(_)
+            | Expr::Cot(_)
             | Expr::Atan(_)
             | Expr::Asin(_)
             | Expr::Acos(_)
+            | Expr::Asec(_)
+            | Expr::Acsc(_)
+            | Expr::Acot(_)
+            | Expr::Sinh(_)
+            | Expr::Cosh(_)
+            | Expr::Tanh(_)
+            | Expr::Asinh(_)
+            | Expr::Acosh(_)
+            | Expr::Atanh(_)
     )
 }
 
@@ -29,6 +41,12 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
             Some(scale_by_coeff(Expr::Sin(arg.clone().boxed()), k))
         }
         Expr::Tan(arg) => integrate_tan(arg, var),
+        Expr::Sec(arg) => integrate_sec(arg, var),
+        Expr::Csc(arg) => integrate_csc(arg, var),
+        Expr::Cot(arg) => integrate_cot(arg, var),
+        Expr::Sinh(arg) => integrate_sinh(arg, var),
+        Expr::Cosh(arg) => integrate_cosh(arg, var),
+        Expr::Tanh(arg) => integrate_tanh(arg, var),
         Expr::Pow(base, exp) => match (&**base, &**exp) {
             (Expr::Sin(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
                 integrate_sin_power(inner, p, var)
@@ -36,12 +54,24 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
             (Expr::Cos(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
                 integrate_cos_power(inner, p, var)
             }
+            (Expr::Sec(inner), Expr::Constant(p)) if p == &Rational::from_integer(2.into()) => {
+                integrate_sec_squared(inner, var)
+            }
+            (Expr::Csc(inner), Expr::Constant(p)) if p == &Rational::from_integer(2.into()) => {
+                integrate_csc_squared(inner, var)
+            }
             _ => None,
         },
         Expr::Mul(_, _) => integrate_sin_cos_product(expr, var),
         Expr::Asin(arg) => integrate_arcsin(arg, var),
         Expr::Acos(arg) => integrate_arccos(arg, var),
         Expr::Atan(arg) => integrate_arctan(arg, var),
+        Expr::Asec(arg) => integrate_arcsec(arg, var),
+        Expr::Acsc(arg) => integrate_arccsc(arg, var),
+        Expr::Acot(arg) => integrate_arccot(arg, var),
+        Expr::Asinh(arg) => integrate_asinh(arg, var),
+        Expr::Acosh(arg) => integrate_acosh(arg, var),
+        Expr::Atanh(arg) => integrate_atanh(arg, var),
         _ => None,
     }
 }
@@ -49,6 +79,59 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
 fn integrate_tan(arg: &Expr, var: &str) -> Option<Expr> {
     let k = coeff_of_var(arg, var)?;
     let base = Expr::Neg(log_abs(Expr::Cos(arg.clone().boxed())).boxed());
+    Some(scale_by_coeff(base, k))
+}
+
+fn integrate_sec(arg: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(arg, var)?;
+    let sum = Expr::Add(
+        Expr::Sec(arg.clone().boxed()).boxed(),
+        Expr::Tan(arg.clone().boxed()).boxed(),
+    );
+    let base = log_abs(sum);
+    Some(scale_by_coeff(base, k))
+}
+
+fn integrate_csc(arg: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(arg, var)?;
+    let diff = Expr::Sub(
+        Expr::Csc(arg.clone().boxed()).boxed(),
+        Expr::Cot(arg.clone().boxed()).boxed(),
+    );
+    let base = log_abs(diff);
+    Some(scale_by_coeff(base, k))
+}
+
+fn integrate_cot(arg: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(arg, var)?;
+    let base = log_abs(Expr::Sin(arg.clone().boxed()));
+    Some(scale_by_coeff(base, k))
+}
+
+fn integrate_sinh(arg: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(arg, var)?;
+    Some(scale_by_coeff(Expr::Cosh(arg.clone().boxed()), k))
+}
+
+fn integrate_cosh(arg: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(arg, var)?;
+    Some(scale_by_coeff(Expr::Sinh(arg.clone().boxed()), k))
+}
+
+fn integrate_tanh(arg: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(arg, var)?;
+    let base = log_abs(Expr::Cosh(arg.clone().boxed()));
+    Some(scale_by_coeff(base, k))
+}
+
+fn integrate_sec_squared(inner: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(inner, var)?;
+    Some(scale_by_coeff(Expr::Tan(inner.clone().boxed()), k))
+}
+
+fn integrate_csc_squared(inner: &Expr, var: &str) -> Option<Expr> {
+    let k = coeff_of_var(inner, var)?;
+    let base = Expr::Neg(Expr::Cot(inner.clone().boxed()).boxed());
     Some(scale_by_coeff(base, k))
 }
 
@@ -471,6 +554,146 @@ fn integrate_arctan(arg: &Expr, var: &str) -> Option<Expr> {
     let term = Expr::Mul(inner.clone().boxed(), Expr::Atan(inner.clone().boxed()).boxed());
     Some(scale_by_coeff(
         Expr::Sub(
+            term.boxed(),
+            Expr::Div(log_term.boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+                .boxed(),
+        ),
+        k,
+    ))
+}
+
+fn integrate_arcsec(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c) = linear_parts(arg, var)?;
+    if is_const_zero(&k) {
+        return None;
+    }
+    let inner = simplify(Expr::Add(
+        Expr::Mul(k.clone().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+        c.clone().boxed(),
+    ));
+    let sqrt = Expr::Pow(
+        Expr::Sub(
+            Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+                .boxed(),
+            Expr::Constant(Rational::one()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into())).boxed(),
+    );
+    let log_term = log_abs(Expr::Add(inner.clone().boxed(), sqrt.boxed()));
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Asec(inner.clone().boxed()).boxed());
+    Some(scale_by_coeff(Expr::Sub(term.boxed(), log_term.boxed()), k))
+}
+
+fn integrate_arccsc(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c) = linear_parts(arg, var)?;
+    if is_const_zero(&k) {
+        return None;
+    }
+    let inner = simplify(Expr::Add(
+        Expr::Mul(k.clone().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+        c.clone().boxed(),
+    ));
+    let sqrt = Expr::Pow(
+        Expr::Sub(
+            Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+                .boxed(),
+            Expr::Constant(Rational::one()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into())).boxed(),
+    );
+    let log_term = log_abs(Expr::Add(inner.clone().boxed(), sqrt.boxed()));
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Acsc(inner.clone().boxed()).boxed());
+    Some(scale_by_coeff(Expr::Add(term.boxed(), log_term.boxed()), k))
+}
+
+fn integrate_arccot(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c) = linear_parts(arg, var)?;
+    if is_const_zero(&k) {
+        return None;
+    }
+    let inner = simplify(Expr::Add(
+        Expr::Mul(k.clone().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+        c.clone().boxed(),
+    ));
+    let log_term = log_abs(Expr::Add(
+        Expr::Constant(Rational::one()).boxed(),
+        Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+            .boxed(),
+    ));
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Acot(inner.clone().boxed()).boxed());
+    Some(scale_by_coeff(
+        Expr::Add(
+            term.boxed(),
+            Expr::Div(log_term.boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+                .boxed(),
+        ),
+        k,
+    ))
+}
+
+fn integrate_asinh(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c) = linear_parts(arg, var)?;
+    if is_const_zero(&k) {
+        return None;
+    }
+    let inner = simplify(Expr::Add(
+        Expr::Mul(k.clone().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+        c.clone().boxed(),
+    ));
+    let sqrt = Expr::Pow(
+        Expr::Add(
+            Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+                .boxed(),
+            Expr::Constant(Rational::one()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into())).boxed(),
+    );
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Asinh(inner.clone().boxed()).boxed());
+    Some(scale_by_coeff(Expr::Sub(term.boxed(), sqrt.boxed()), k))
+}
+
+fn integrate_acosh(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c) = linear_parts(arg, var)?;
+    if is_const_zero(&k) {
+        return None;
+    }
+    let inner = simplify(Expr::Add(
+        Expr::Mul(k.clone().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+        c.clone().boxed(),
+    ));
+    let sqrt = Expr::Pow(
+        Expr::Sub(
+            Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+                .boxed(),
+            Expr::Constant(Rational::one()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into())).boxed(),
+    );
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Acosh(inner.clone().boxed()).boxed());
+    Some(scale_by_coeff(Expr::Sub(term.boxed(), sqrt.boxed()), k))
+}
+
+fn integrate_atanh(arg: &Expr, var: &str) -> Option<Expr> {
+    let (k, c) = linear_parts(arg, var)?;
+    if is_const_zero(&k) {
+        return None;
+    }
+    let inner = simplify(Expr::Add(
+        Expr::Mul(k.clone().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+        c.clone().boxed(),
+    ));
+    let log_term = log_abs(Expr::Sub(
+        Expr::Constant(Rational::one()).boxed(),
+        Expr::Pow(inner.clone().boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
+            .boxed(),
+    ));
+    let term = Expr::Mul(inner.clone().boxed(), Expr::Atanh(inner.clone().boxed()).boxed());
+    Some(scale_by_coeff(
+        Expr::Add(
             term.boxed(),
             Expr::Div(log_term.boxed(), Expr::Constant(Rational::from_integer(2.into())).boxed())
                 .boxed(),

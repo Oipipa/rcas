@@ -213,9 +213,21 @@ fn collect_generators(expr: &Expr, var: &str, out: &mut HashSet<Expr>, saw_abs_l
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
         | Expr::Atan(inner)
         | Expr::Asin(inner)
         | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
         | Expr::Abs(inner) => {
             collect_generators(inner, var, out, saw_abs_log);
         }
@@ -247,9 +259,21 @@ fn is_in_field(expr: &Expr, var: &str, gens: &[Expr]) -> bool {
         Expr::Sin(_)
         | Expr::Cos(_)
         | Expr::Tan(_)
+        | Expr::Sec(_)
+        | Expr::Csc(_)
+        | Expr::Cot(_)
         | Expr::Atan(_)
         | Expr::Asin(_)
         | Expr::Acos(_)
+        | Expr::Asec(_)
+        | Expr::Acsc(_)
+        | Expr::Acot(_)
+        | Expr::Sinh(_)
+        | Expr::Cosh(_)
+        | Expr::Tanh(_)
+        | Expr::Asinh(_)
+        | Expr::Acosh(_)
+        | Expr::Atanh(_)
         | Expr::Abs(_) => false,
     }
 }
@@ -268,9 +292,21 @@ fn contains_subexpr(expr: &Expr, target: &Expr) -> bool {
         | Expr::Sin(inner)
         | Expr::Cos(inner)
         | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
         | Expr::Atan(inner)
         | Expr::Asin(inner)
         | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
         | Expr::Exp(inner)
         | Expr::Log(inner)
         | Expr::Abs(inner) => contains_subexpr(inner, target),
@@ -307,9 +343,21 @@ fn replace_expr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
         Expr::Sin(inner) => Expr::Sin(replace_expr(inner, target, replacement).boxed()),
         Expr::Cos(inner) => Expr::Cos(replace_expr(inner, target, replacement).boxed()),
         Expr::Tan(inner) => Expr::Tan(replace_expr(inner, target, replacement).boxed()),
+        Expr::Sec(inner) => Expr::Sec(replace_expr(inner, target, replacement).boxed()),
+        Expr::Csc(inner) => Expr::Csc(replace_expr(inner, target, replacement).boxed()),
+        Expr::Cot(inner) => Expr::Cot(replace_expr(inner, target, replacement).boxed()),
         Expr::Atan(inner) => Expr::Atan(replace_expr(inner, target, replacement).boxed()),
         Expr::Asin(inner) => Expr::Asin(replace_expr(inner, target, replacement).boxed()),
         Expr::Acos(inner) => Expr::Acos(replace_expr(inner, target, replacement).boxed()),
+        Expr::Asec(inner) => Expr::Asec(replace_expr(inner, target, replacement).boxed()),
+        Expr::Acsc(inner) => Expr::Acsc(replace_expr(inner, target, replacement).boxed()),
+        Expr::Acot(inner) => Expr::Acot(replace_expr(inner, target, replacement).boxed()),
+        Expr::Sinh(inner) => Expr::Sinh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Cosh(inner) => Expr::Cosh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Tanh(inner) => Expr::Tanh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Asinh(inner) => Expr::Asinh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Acosh(inner) => Expr::Acosh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Atanh(inner) => Expr::Atanh(replace_expr(inner, target, replacement).boxed()),
         Expr::Exp(inner) => Expr::Exp(replace_expr(inner, target, replacement).boxed()),
         Expr::Log(inner) => Expr::Log(replace_expr(inner, target, replacement).boxed()),
         Expr::Abs(inner) => Expr::Abs(replace_expr(inner, target, replacement).boxed()),

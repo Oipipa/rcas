@@ -32,10 +32,23 @@ pub fn is_rational(expr: &Expr, var: &str) -> bool {
 pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
     let (num, den) = as_division(expr)?;
 
-    let num_poly = Poly::from_expr(&num, var)?;
-    let den_poly = Poly::from_expr(&den, var)?;
+    let mut num_poly = Poly::from_expr(&num, var)?;
+    let mut den_poly = Poly::from_expr(&den, var)?;
     if den_poly.is_zero() || den_poly.degree()? == 0 {
         return None;
+    }
+
+    let gcd = Poly::gcd(&num_poly, &den_poly);
+    if !gcd.is_one() {
+        num_poly = num_poly.div_exact(&gcd)?;
+        den_poly = den_poly.div_exact(&gcd)?;
+    }
+
+    let den_lc = den_poly.leading_coeff();
+    if !den_lc.is_one() {
+        let scale = Rational::one() / den_lc;
+        num_poly = num_poly.scale(&scale);
+        den_poly = den_poly.scale(&scale);
     }
 
     let (quotient, remainder) = num_poly.div_rem(&den_poly);
@@ -51,23 +64,31 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
         return Some(simplify(sum_exprs(pieces)));
     }
 
-    let factorization = factor_polynomial(&den, var)?;
-    if factorization.constant.is_zero() {
-        return None;
-    }
+    let (hermite_terms, reduced_terms) = hermite_reduce(&remainder, &den_poly, var)?;
+    pieces.extend(hermite_terms);
 
-    if !factorization
-        .factors
-        .iter()
-        .all(|f| matches!(f.poly.degree(), Some(1 | 2)))
-    {
-        return None;
-    }
+    for (num_term, den_term) in reduced_terms {
+        if num_term.is_zero() {
+            continue;
+        }
+        let factorization = factor_polynomial(&den_term.to_expr(var), var)?;
+        if factorization.constant.is_zero() {
+            return None;
+        }
 
-    let scaled_remainder = remainder.scale(&(Rational::one() / factorization.constant.clone()));
-    let denominator = build_denominator(&factorization);
-    let pf = integrate_partial_fraction(&scaled_remainder, &denominator, &factorization, var)?;
-    pieces.push(pf);
+        if !factorization
+            .factors
+            .iter()
+            .all(|f| matches!(f.poly.degree(), Some(1 | 2)))
+        {
+            return None;
+        }
+
+        let scaled_num = num_term.scale(&(Rational::one() / factorization.constant.clone()));
+        let denominator = build_denominator(&factorization);
+        let pf = integrate_partial_fraction(&scaled_num, &denominator, &factorization, var)?;
+        pieces.push(pf);
+    }
 
     Some(simplify(sum_exprs(pieces)))
 }
@@ -148,6 +169,151 @@ fn integrate_partial_fraction(
     }
 
     Some(simplify(sum_exprs(terms)))
+}
+
+fn hermite_reduce(
+    remainder: &Poly,
+    denominator: &Poly,
+    var: &str,
+) -> Option<(Vec<Expr>, Vec<(Poly, Poly)>)> {
+    let parts = denominator.square_free_decomposition();
+    if parts.is_empty() {
+        return Some((Vec::new(), Vec::new()));
+    }
+
+    let mut terms: Vec<Expr> = Vec::new();
+    let mut reduced_terms: Vec<(Poly, Poly)> = Vec::new();
+
+    for (squarefree, multiplicity) in parts {
+        let denom_part = squarefree.pow(multiplicity);
+        let other = denominator.div_exact(&denom_part)?;
+        let inv_other = if other.is_one() {
+            Poly::one()
+        } else {
+            poly_mod_inverse(&other, &denom_part)?
+        };
+        let num_part = poly_mod(&(remainder.clone() * inv_other), &denom_part);
+        let (mut hermite_terms, reduced_num) =
+            hermite_reduce_factor(num_part, &squarefree, multiplicity, var)?;
+        terms.append(&mut hermite_terms);
+        if !reduced_num.is_zero() {
+            reduced_terms.push((reduced_num, squarefree));
+        }
+    }
+
+    Some((terms, reduced_terms))
+}
+
+fn hermite_reduce_factor(
+    mut numerator: Poly,
+    squarefree: &Poly,
+    multiplicity: usize,
+    var: &str,
+) -> Option<(Vec<Expr>, Poly)> {
+    if multiplicity == 0 {
+        return None;
+    }
+    if multiplicity == 1 {
+        return Some((Vec::new(), numerator));
+    }
+
+    let derivative = squarefree.derivative();
+    if derivative.is_zero() {
+        return None;
+    }
+    let inv_derivative = poly_mod_inverse(&derivative, squarefree)?;
+    let mut terms: Vec<Expr> = Vec::new();
+    let mut power = multiplicity;
+
+    while power > 1 {
+        let k_minus_one = Rational::from_integer(BigInt::from((power - 1) as i64));
+        let remainder = poly_mod(&numerator, squarefree);
+        let u = if remainder.is_zero() {
+            Poly::zero()
+        } else {
+            let scaled = remainder * inv_derivative.clone();
+            let scaled = scaled.scale(&(Rational::one() / k_minus_one.clone()));
+            poly_mod(&scaled.scale(&Rational::from_integer((-1).into())), squarefree)
+        };
+
+        if !u.is_zero() {
+            let term = rational_power_term(&u, squarefree, power - 1, var);
+            terms.push(simplify(term));
+            let u_prime = u.derivative();
+            let u_scaled = u.scale(&k_minus_one);
+            let numerator_adjust =
+                u_prime * squarefree.clone() - u_scaled * derivative.clone();
+            let reduced = numerator - numerator_adjust;
+            numerator = reduced.div_exact(squarefree)?;
+        } else {
+            numerator = numerator.div_exact(squarefree)?;
+        }
+
+        power -= 1;
+    }
+
+    Some((terms, numerator))
+}
+
+fn rational_power_term(num: &Poly, den: &Poly, power: usize, var: &str) -> Expr {
+    let numerator = num.to_expr(var);
+    let exponent = Rational::from_integer(BigInt::from(-(power as i64)));
+    let pow = Expr::Pow(
+        den.to_expr(var).boxed(),
+        Expr::Constant(exponent).boxed(),
+    );
+    Expr::Mul(numerator.boxed(), pow.boxed())
+}
+
+fn poly_mod(poly: &Poly, modulus: &Poly) -> Poly {
+    if modulus.is_zero() {
+        return poly.clone();
+    }
+    let (_, remainder) = poly.div_rem(modulus);
+    remainder
+}
+
+fn poly_mod_inverse(value: &Poly, modulus: &Poly) -> Option<Poly> {
+    if modulus.is_zero() {
+        return None;
+    }
+    let (gcd, _s, t) = poly_extended_gcd(modulus, value);
+    if !gcd.is_one() {
+        return None;
+    }
+    Some(poly_mod(&t, modulus))
+}
+
+fn poly_extended_gcd(a: &Poly, b: &Poly) -> (Poly, Poly, Poly) {
+    let mut r0 = a.clone();
+    let mut r1 = b.clone();
+    let mut s0 = Poly::one();
+    let mut s1 = Poly::zero();
+    let mut t0 = Poly::zero();
+    let mut t1 = Poly::one();
+
+    while !r1.is_zero() {
+        let (q, r) = r0.div_rem(&r1);
+        r0 = r1;
+        r1 = r;
+        let s2 = s0.clone() - q.clone() * s1.clone();
+        let t2 = t0.clone() - q * t1.clone();
+        s0 = s1;
+        s1 = s2;
+        t0 = t1;
+        t1 = t2;
+    }
+
+    if r0.is_zero() {
+        return (Poly::zero(), Poly::zero(), Poly::zero());
+    }
+
+    let lc = r0.leading_coeff();
+    if lc.is_zero() {
+        return (Poly::zero(), Poly::zero(), Poly::zero());
+    }
+    let scale = Rational::one() / lc;
+    (r0.scale(&scale), s0.scale(&scale), t0.scale(&scale))
 }
 
 fn as_division(expr: &Expr) -> Option<(Expr, Expr)> {
@@ -309,25 +475,42 @@ fn integrate_quadratic_inverse(factor: &Poly, power: usize, var: &str) -> Option
 
     let four = Rational::from_integer(4.into());
     let delta = four * a.clone() * c.clone() - b.clone() * b.clone();
-    if delta.is_zero() || delta.is_negative() {
+    if delta.is_zero() {
         return None;
     }
 
-    let sqrt_delta = Expr::Pow(
-        Expr::Constant(delta.clone()).boxed(),
-        Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
-    );
     let q_expr = factor.to_expr(var);
     let deriv_expr = factor.derivative().to_expr(var);
 
     if power == 1 {
-        let leading = Expr::Div(
-            Expr::Constant(Rational::from_integer(2.into())).boxed(),
-            sqrt_delta.clone().boxed(),
+        if delta.is_positive() {
+            let sqrt_delta = Expr::Pow(
+                Expr::Constant(delta.clone()).boxed(),
+                Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+            );
+            let leading = Expr::Div(
+                Expr::Constant(Rational::from_integer(2.into())).boxed(),
+                sqrt_delta.clone().boxed(),
+            );
+            let atan_arg = Expr::Div(deriv_expr.boxed(), sqrt_delta.clone().boxed());
+            let atan_expr = Expr::Atan(atan_arg.boxed());
+            return Some(Expr::Mul(leading.boxed(), atan_expr.boxed()));
+        }
+
+        let disc = -delta.clone();
+        let sqrt_disc = Expr::Pow(
+            Expr::Constant(disc.clone()).boxed(),
+            Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
         );
-        let atan_arg = Expr::Div(deriv_expr.boxed(), sqrt_delta.clone().boxed());
-        let atan_expr = Expr::Atan(atan_arg.boxed());
-        return Some(Expr::Mul(leading.boxed(), atan_expr.boxed()));
+        let ratio = Expr::Div(
+            Expr::Sub(deriv_expr.clone().boxed(), sqrt_disc.clone().boxed()).boxed(),
+            Expr::Add(deriv_expr.boxed(), sqrt_disc.clone().boxed()).boxed(),
+        );
+        let leading = Expr::Div(
+            Expr::Constant(Rational::one()).boxed(),
+            sqrt_disc.clone().boxed(),
+        );
+        return Some(Expr::Mul(leading.boxed(), log_abs(ratio).boxed()));
     }
 
     let k_minus_one = Rational::from_integer(BigInt::from(power as i64 - 1));

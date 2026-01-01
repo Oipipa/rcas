@@ -29,6 +29,29 @@ fn trig_and_exponentials() {
 }
 
 #[test]
+fn extended_trig_and_hyperbolic() {
+    assert_diff_eq("x", "sec(x)", "sec(x)*tan(x)");
+    assert_diff_eq("x", "csc(x)", "-csc(x)*cot(x)");
+    assert_diff_eq("x", "cot(x)", "-(csc(x)^2)");
+    assert_diff_eq("x", "asec(x)", "1/(abs(x)*(x^2 - 1)^(1/2))");
+    assert_diff_eq("x", "acsc(x)", "-1/(abs(x)*(x^2 - 1)^(1/2))");
+    assert_diff_eq("x", "acot(x)", "-1/(1 + x^2)");
+    assert_diff_eq("x", "sinh(x)", "cosh(x)");
+    assert_diff_eq("x", "cosh(x)", "sinh(x)");
+    assert_diff_eq("x", "tanh(x)", "1/cosh(x)^2");
+    assert_diff_eq("x", "asinh(x)", "1/(x^2 + 1)^(1/2)");
+    assert_diff_eq("x", "acosh(x)", "1/(x^2 - 1)^(1/2)");
+    assert_diff_eq("x", "atanh(x)", "1/(1 - x^2)");
+}
+
+#[test]
+fn nontrivial_hyperbolic_chain_rules() {
+    assert_diff_eq("x", "x*atanh(x/y)", "atanh(x/y) + x*((y/y^2)/(1 - (x/y)^2))");
+    assert_diff_eq("x", "sinh(2*x + 1)", "2*cosh(2*x + 1)");
+    assert_diff_eq("x", "asinh(x^2)", "2*x/((x^2)^2 + 1)^(1/2)");
+}
+
+#[test]
 fn general_power_rule() {
     assert_diff_eq("x", "x^x", "x^x*(log(x)+1)");
     assert_diff_eq("x", "log(x)", "1/x");

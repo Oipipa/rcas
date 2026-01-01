@@ -94,20 +94,7 @@ fn parse_identifier(input: &str) -> IResult<&str, Expr, VerboseError<&str>> {
 
 fn parse_function(input: &str) -> IResult<&str, Expr, VerboseError<&str>> {
     let (rest, (name, arg)) = pair(
-        alt((
-            tag("sin"),
-            tag("cos"),
-            tag("tan"),
-            tag("arctan"),
-            tag("atan"),
-            tag("arcsin"),
-            tag("asin"),
-            tag("arccos"),
-            tag("acos"),
-            tag("exp"),
-            tag("log"),
-            tag("abs"),
-        )),
+        parse_function_name,
         alt((
             delimited(ws(char('(')), parse_add_sub, ws(char(')'))),
             parse_primary,
@@ -118,9 +105,21 @@ fn parse_function(input: &str) -> IResult<&str, Expr, VerboseError<&str>> {
         "sin" => Expr::Sin(arg.boxed()),
         "cos" => Expr::Cos(arg.boxed()),
         "tan" => Expr::Tan(arg.boxed()),
+        "sec" => Expr::Sec(arg.boxed()),
+        "csc" => Expr::Csc(arg.boxed()),
+        "cot" => Expr::Cot(arg.boxed()),
         "arctan" | "atan" => Expr::Atan(arg.boxed()),
         "arcsin" | "asin" => Expr::Asin(arg.boxed()),
         "arccos" | "acos" => Expr::Acos(arg.boxed()),
+        "arcsec" | "asec" => Expr::Asec(arg.boxed()),
+        "arccsc" | "acsc" => Expr::Acsc(arg.boxed()),
+        "arccot" | "acot" => Expr::Acot(arg.boxed()),
+        "sinh" => Expr::Sinh(arg.boxed()),
+        "cosh" => Expr::Cosh(arg.boxed()),
+        "tanh" => Expr::Tanh(arg.boxed()),
+        "arcsinh" | "asinh" => Expr::Asinh(arg.boxed()),
+        "arccosh" | "acosh" => Expr::Acosh(arg.boxed()),
+        "arctanh" | "atanh" => Expr::Atanh(arg.boxed()),
         "exp" => Expr::Exp(arg.boxed()),
         "log" => Expr::Log(arg.boxed()),
         "abs" => Expr::Abs(arg.boxed()),
@@ -128,6 +127,45 @@ fn parse_function(input: &str) -> IResult<&str, Expr, VerboseError<&str>> {
     };
 
     Ok((rest, expr))
+}
+
+fn parse_function_name(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
+    alt((
+        alt((
+            tag("arccosh"),
+            tag("arcsinh"),
+            tag("arctanh"),
+            tag("arccos"),
+            tag("arcsin"),
+            tag("arctan"),
+            tag("arcsec"),
+            tag("arccsc"),
+            tag("arccot"),
+        )),
+        alt((
+            tag("acosh"),
+            tag("asinh"),
+            tag("atanh"),
+            tag("acos"),
+            tag("asin"),
+            tag("atan"),
+            tag("asec"),
+            tag("acsc"),
+            tag("acot"),
+        )),
+        alt((
+            tag("cosh"),
+            tag("sinh"),
+            tag("tanh"),
+            tag("cos"),
+            tag("sin"),
+            tag("tan"),
+            tag("sec"),
+            tag("csc"),
+            tag("cot"),
+        )),
+        alt((tag("exp"), tag("log"), tag("abs"))),
+    ))(input)
 }
 
 fn parse_int(input: &str) -> IResult<&str, BigInt, VerboseError<&str>> {

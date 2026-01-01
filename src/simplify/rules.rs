@@ -45,6 +45,22 @@ fn simplify_cached(expr: Expr, cache: &mut HashMap<Expr, Expr>) -> Expr {
             x => Expr::Tan(x.boxed()),
         },
 
+        Expr::Sec(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => one(),
+            Expr::Neg(inner) => Expr::Sec(inner.boxed()),
+            x => Expr::Sec(x.boxed()),
+        },
+
+        Expr::Csc(a) => match simplify_cached(*a, cache) {
+            Expr::Neg(inner) => simplify_neg(Expr::Csc(inner.boxed())),
+            x => Expr::Csc(x.boxed()),
+        },
+
+        Expr::Cot(a) => match simplify_cached(*a, cache) {
+            Expr::Neg(inner) => simplify_neg(Expr::Cot(inner.boxed())),
+            x => Expr::Cot(x.boxed()),
+        },
+
         Expr::Atan(a) => match simplify_cached(*a, cache) {
             x if is_zero(&x) => zero(),
             Expr::Neg(inner) => simplify_neg(Expr::Atan(inner.boxed())),
@@ -61,6 +77,45 @@ fn simplify_cached(expr: Expr, cache: &mut HashMap<Expr, Expr>) -> Expr {
             x if is_zero(&x) => Expr::Acos(zero().boxed()),
             Expr::Neg(inner) => Expr::Acos(inner.boxed()),
             x => Expr::Acos(x.boxed()),
+        },
+
+        Expr::Asec(a) => Expr::Asec(simplify_cached(*a, cache).boxed()),
+        Expr::Acsc(a) => Expr::Acsc(simplify_cached(*a, cache).boxed()),
+        Expr::Acot(a) => match simplify_cached(*a, cache) {
+            Expr::Neg(inner) => simplify_neg(Expr::Acot(inner.boxed())),
+            x => Expr::Acot(x.boxed()),
+        },
+
+        Expr::Sinh(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => zero(),
+            Expr::Neg(inner) => simplify_neg(Expr::Sinh(inner.boxed())),
+            x => Expr::Sinh(x.boxed()),
+        },
+
+        Expr::Cosh(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => one(),
+            Expr::Neg(inner) => Expr::Cosh(inner.boxed()),
+            x => Expr::Cosh(x.boxed()),
+        },
+
+        Expr::Tanh(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => zero(),
+            Expr::Neg(inner) => simplify_neg(Expr::Tanh(inner.boxed())),
+            x => Expr::Tanh(x.boxed()),
+        },
+
+        Expr::Asinh(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => zero(),
+            Expr::Neg(inner) => simplify_neg(Expr::Asinh(inner.boxed())),
+            x => Expr::Asinh(x.boxed()),
+        },
+
+        Expr::Acosh(a) => Expr::Acosh(simplify_cached(*a, cache).boxed()),
+
+        Expr::Atanh(a) => match simplify_cached(*a, cache) {
+            x if is_zero(&x) => zero(),
+            Expr::Neg(inner) => simplify_neg(Expr::Atanh(inner.boxed())),
+            x => Expr::Atanh(x.boxed()),
         },
 
         Expr::Exp(a) => match simplify_cached(*a, cache) {
