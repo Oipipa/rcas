@@ -276,6 +276,11 @@ fn integrate_algebraic_term(
         return None;
     }
 
+    if sqrt_power == -1 && poly_power < 0 {
+        let denom_power = (-poly_power) as usize;
+        return integrate_poly_over_sqrt_quadratic_power(&rest_poly, base_poly, var, denom_power);
+    }
+
     if poly_power < 0 {
         let divisor = base_poly.pow((-poly_power) as usize);
         rest_poly = rest_poly.div_exact(&divisor)?;
@@ -418,6 +423,212 @@ fn integrate_poly_over_sqrt_quadratic(poly: &Poly, base_poly: &Poly, var: &str) 
     Some(simplify_fully(Expr::Mul(scale.boxed(), sum.boxed())))
 }
 
+#[derive(Clone)]
+struct QuadraticPowerContext {
+    u_expr: Expr,
+    u2_plus_d: Expr,
+    sqrt_expr: Expr,
+    log_expr: Expr,
+    d: Rational,
+}
+
+fn integrate_poly_over_sqrt_quadratic_power(
+    poly: &Poly,
+    base_poly: &Poly,
+    var: &str,
+    power: usize,
+) -> Option<Expr> {
+    if power == 0 {
+        return integrate_poly_over_sqrt_quadratic(poly, base_poly, var);
+    }
+    if poly.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    if base_poly.degree()? != 2 {
+        return None;
+    }
+    let a = base_poly.coeff(2);
+    if a.is_zero() {
+        return None;
+    }
+    let b = base_poly.coeff(1);
+    let c = base_poly.coeff(0);
+
+    let two = Rational::from_integer(2.into());
+    let four = Rational::from_integer(4.into());
+    let h = b.clone() / (two.clone() * a.clone());
+    let shift = -h.clone();
+    let four_ac = four.clone() * a.clone() * c.clone();
+    let b_sq = b.clone() * b.clone();
+    let denom = four * a.clone() * a.clone();
+    let d = (four_ac - b_sq) / denom;
+
+    let shifted = poly_shift(poly, &shift);
+
+    let u_expr = Expr::Add(
+        Expr::Variable(var.to_string()).boxed(),
+        Expr::Constant(h).boxed(),
+    );
+    let u_sq = Expr::Pow(u_expr.clone().boxed(), Expr::integer(2).boxed());
+    let u2_plus_d = Expr::Add(u_sq.boxed(), Expr::Constant(d.clone()).boxed());
+    let sqrt_expr = Expr::Pow(
+        u2_plus_d.clone().boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+            .boxed(),
+    );
+    let log_expr = super::log_abs(Expr::Add(
+        u_expr.clone().boxed(),
+        sqrt_expr.clone().boxed(),
+    ));
+
+    let ctx = QuadraticPowerContext {
+        u_expr,
+        u2_plus_d,
+        sqrt_expr,
+        log_expr,
+        d,
+    };
+    let mut memo = HashMap::new();
+
+    let mut sum: Option<Expr> = None;
+    for (exp, coeff) in shifted.coeff_entries() {
+        if coeff.is_zero() {
+            continue;
+        }
+        let integral = monomial_integral(exp, power, &ctx, &mut memo)?;
+        let term = Expr::Mul(Expr::Constant(coeff).boxed(), integral.boxed());
+        sum = Some(match sum {
+            None => term,
+            Some(acc) => Expr::Add(acc.boxed(), term.boxed()),
+        });
+    }
+
+    let sum = sum.unwrap_or_else(|| Expr::Constant(Rational::zero()));
+    let scale_exp = Rational::from_integer(BigInt::from(-(2 * power as i64 + 1)))
+        / Rational::from_integer(2.into());
+    let scale = Expr::Pow(Expr::Constant(a).boxed(), Expr::Constant(scale_exp).boxed());
+    Some(simplify_fully(Expr::Mul(scale.boxed(), sum.boxed())))
+}
+
+fn monomial_integral(
+    exp: usize,
+    power: usize,
+    ctx: &QuadraticPowerContext,
+    memo: &mut HashMap<(usize, usize), Expr>,
+) -> Option<Expr> {
+    if let Some(cached) = memo.get(&(exp, power)) {
+        return Some(cached.clone());
+    }
+
+    if ctx.d.is_zero() {
+        let k = exp as i64 - (2 * power as i64 + 1);
+        let result = if k == -1 {
+            super::log_abs(ctx.u_expr.clone())
+        } else {
+            let new_exp = k + 1;
+            let denom = Rational::from_integer(BigInt::from(new_exp));
+            let pow = pow_expr_signed(&ctx.u_expr, new_exp);
+            Expr::Div(pow.boxed(), Expr::Constant(denom).boxed())
+        };
+        memo.insert((exp, power), result.clone());
+        return Some(result);
+    }
+
+    let result = match exp {
+        0 => {
+            if power == 0 {
+                ctx.log_expr.clone()
+            } else {
+                integral_zero(power, ctx, memo)?
+            }
+        }
+        1 => integral_one(power, ctx),
+        _ => {
+            if power == 0 {
+                integral_sqrt(exp, ctx, memo)?
+            } else {
+                let lower = monomial_integral(exp - 2, power - 1, ctx, memo)?;
+                let same = monomial_integral(exp - 2, power, ctx, memo)?;
+                Expr::Sub(
+                    lower.boxed(),
+                    Expr::Mul(Expr::Constant(ctx.d.clone()).boxed(), same.boxed()).boxed(),
+                )
+            }
+        }
+    };
+
+    memo.insert((exp, power), result.clone());
+    Some(result)
+}
+
+fn integral_zero(
+    power: usize,
+    ctx: &QuadraticPowerContext,
+    memo: &mut HashMap<(usize, usize), Expr>,
+) -> Option<Expr> {
+    if power == 0 {
+        return Some(ctx.log_expr.clone());
+    }
+    let denom = ctx.d.clone() * Rational::from_integer(BigInt::from(2 * power as i64 - 1));
+    if denom.is_zero() {
+        return None;
+    }
+    let coeff = Rational::one() / denom.clone();
+    let exponent = Rational::from_integer(1.into()) / Rational::from_integer(2.into())
+        - Rational::from_integer(BigInt::from(power as i64));
+    let pow = Expr::Pow(
+        ctx.u2_plus_d.clone().boxed(),
+        Expr::Constant(exponent).boxed(),
+    );
+    let term1 = Expr::Mul(
+        Expr::Constant(coeff).boxed(),
+        Expr::Mul(ctx.u_expr.clone().boxed(), pow.boxed()).boxed(),
+    );
+    let recur_coeff =
+        Rational::from_integer(BigInt::from(2 * (power as i64 - 1))) / denom;
+    let prev = monomial_integral(0, power - 1, ctx, memo)?;
+    let term2 = Expr::Mul(Expr::Constant(recur_coeff).boxed(), prev.boxed());
+    Some(simplify_fully(Expr::Add(term1.boxed(), term2.boxed())))
+}
+
+fn integral_one(power: usize, ctx: &QuadraticPowerContext) -> Expr {
+    let exponent = Rational::from_integer(1.into()) / Rational::from_integer(2.into())
+        - Rational::from_integer(BigInt::from(power as i64));
+    let denom = Rational::from_integer(BigInt::from(1 - 2 * power as i64));
+    let pow = Expr::Pow(
+        ctx.u2_plus_d.clone().boxed(),
+        Expr::Constant(exponent).boxed(),
+    );
+    let coeff = Rational::one() / denom;
+    simplify_fully(Expr::Mul(Expr::Constant(coeff).boxed(), pow.boxed()))
+}
+
+fn integral_sqrt(
+    exp: usize,
+    ctx: &QuadraticPowerContext,
+    memo: &mut HashMap<(usize, usize), Expr>,
+) -> Option<Expr> {
+    if exp == 0 {
+        return Some(ctx.log_expr.clone());
+    }
+    if exp == 1 {
+        return Some(ctx.sqrt_expr.clone());
+    }
+    let n_rat = Rational::from_integer(BigInt::from(exp as i64));
+    let term1 = Expr::Div(
+        Expr::Mul(
+            pow_expr(&ctx.u_expr, exp - 1).boxed(),
+            ctx.sqrt_expr.clone().boxed(),
+        )
+        .boxed(),
+        Expr::Constant(n_rat.clone()).boxed(),
+    );
+    let coeff = Rational::from_integer(BigInt::from((exp - 1) as i64)) * ctx.d.clone() / n_rat;
+    let prev = monomial_integral(exp - 2, 0, ctx, memo)?;
+    let term2 = Expr::Mul(Expr::Constant(coeff).boxed(), prev.boxed());
+    Some(simplify_fully(Expr::Sub(term1.boxed(), term2.boxed())))
+}
+
 fn poly_shift(poly: &Poly, shift: &Rational) -> Poly {
     let mut coeffs = BTreeMap::new();
     for (exp, coeff) in poly.coeff_entries() {
@@ -474,6 +685,17 @@ fn pow_expr(base: &Expr, exp: usize) -> Expr {
         base.clone()
     } else {
         Expr::Pow(base.clone().boxed(), Expr::integer(exp as i64).boxed())
+    }
+}
+
+fn pow_expr_signed(base: &Expr, exp: i64) -> Expr {
+    if exp == 0 {
+        Expr::Constant(Rational::one())
+    } else {
+        Expr::Pow(
+            base.clone().boxed(),
+            Expr::Constant(Rational::from_integer(BigInt::from(exp))).boxed(),
+        )
     }
 }
 

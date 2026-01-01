@@ -1772,16 +1772,20 @@ fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
         return None;
     }
 
+    if integrate_by_substitution(expr, var).is_some() {
+        return None;
+    }
+
     match expr {
         Expr::Mul(_, _) | Expr::Div(_, _) | Expr::Neg(_) => {
             let (_, var_factors) = split_constant_factors(expr, var);
-            if var_factors.len() == 1 {
-                if let Some(kind) = detect_non_elementary_core(&var_factors[0], var) {
-                    return Some(kind);
-                }
-            }
             if let Some(kind) = detect_power_self_log(&var_factors, var) {
                 return Some(kind);
+            }
+            for factor in &var_factors {
+                if let Some(kind) = detect_non_elementary_core(factor, var) {
+                    return Some(kind);
+                }
             }
         }
         _ => {}

@@ -1445,6 +1445,43 @@ fn algebraic_quadratic_roundtrip_suite() {
 }
 
 #[test]
+fn algebraic_quadratic_inverse_power_suite() {
+    let samples = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
+    let cases = vec![
+        "1/(x^2 + 1)^(3/2)",
+        "x/(x^2 + 1)^(3/2)",
+        "x^2/(x^2 + 1)^(3/2)",
+        "x^3/(x^2 + 1)^(3/2)",
+        "(x^4 + 2*x + 1)/(x^2 + 1)^(3/2)",
+        "1/(x^2 + 1)^(5/2)",
+        "x/(x^2 + 1)^(5/2)",
+        "x^2/(x^2 + 1)^(5/2)",
+        "(x^3 + x)/(x^2 + 1)^(5/2)",
+        "1/(x^2 + 1)^(7/2)",
+        "x/(x^2 + 1)^(7/2)",
+        "1/(2*x^2 + 1)^(3/2)",
+        "x/(2*x^2 + 1)^(3/2)",
+        "x^2/(2*x^2 + 1)^(3/2)",
+        "(x^3 + 2*x + 1)/(2*x^2 + 1)^(3/2)",
+        "1/(x^2 + 2*x + 5)^(3/2)",
+        "x/(x^2 + 2*x + 5)^(3/2)",
+        "x^2/(x^2 + 2*x + 5)^(3/2)",
+        "(x^3 + x + 1)/(x^2 + 2*x + 5)^(3/2)",
+        "1/(3*x^2 + 2*x + 2)^(3/2)",
+        "x/(3*x^2 + 2*x + 2)^(3/2)",
+        "(x^2 + x + 1)/(3*x^2 + 2*x + 2)^(3/2)",
+        "1/(x^2 + 4*x + 8)^(3/2)",
+        "x/(x^2 + 4*x + 8)^(3/2)",
+        "(x^2 + 2*x + 3)/(x^2 + 4*x + 8)^(3/2)",
+    ];
+
+    assert_eq!(cases.len(), 25, "expected 25 inverse power cases");
+    for input in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn algebraic_non_elementary_suite() {
     let cases = vec![
         ("(x^3 + 1)^(1/2)", NonElementaryKind::SpecialFunctionNeeded),
@@ -1457,6 +1494,44 @@ fn algebraic_non_elementary_suite() {
     assert_eq!(cases.len(), 5, "expected 5 algebraic non-elementary cases");
     for (input, expected) in cases {
         assert_non_elementary(input, expected);
+    }
+}
+
+#[test]
+fn quartic_radical_non_elementary_regressions() {
+    let bases = vec![
+        "x^4 + 1",
+        "x^4 + x^2 + 1",
+        "x^4 + 3*x^2 + 1",
+        "x^4 - x^2 + 1",
+        "x^4 + 2*x + 1",
+        "x^4 - 2*x + 3",
+        "x^4 + 4*x + 5",
+        "x^4 - 3*x + 2",
+        "x^4 + 2*x^2 + 3",
+        "x^4 + x^3 + 1",
+    ];
+    let exps = vec!["1/2", "3/2", "5/2", "-1/2", "-3/2"];
+    let mut cases = Vec::new();
+
+    for base in &bases {
+        for exp in &exps {
+            cases.push(format!("({base})^({exp})"));
+        }
+    }
+    for base in &bases {
+        for exp in &exps {
+            cases.push(format!("(x^2 + 1)*({base})^({exp})"));
+        }
+    }
+
+    if !cases.is_empty() {
+        cases[0] = "1/(x^2*(x^4+1)^(3/2))".to_string();
+    }
+
+    assert_eq!(cases.len(), 100, "expected 100 quartic radical cases");
+    for input in cases {
+        assert_non_elementary(&input, NonElementaryKind::SpecialFunctionNeeded);
     }
 }
 
