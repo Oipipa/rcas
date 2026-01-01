@@ -2,6 +2,7 @@
 //! mathematical expressions.
 
 pub mod calculus;
+pub mod diff_field;
 pub mod error;
 pub mod expr;
 pub mod factor;
@@ -15,6 +16,7 @@ pub use calculus::{
     AttemptStatus, IntegrandKind, IntegrandReport, IntegrationAttempt, IntegrationResult,
     NonElementaryKind, ReasonCode, Strategy, differentiate, integrate,
 };
+pub use diff_field::{Extension, ExtensionKind, FieldElement, Tower};
 pub use error::{CasError, Result};
 pub use expr::{Expr, Rational, add, div, mul, neg, one, pow, rational, sub, zero};
 pub use factor::{Factor, Factorization, factor_polynomial, factor_polynomial_expr};

@@ -260,6 +260,25 @@ fn eval_expr_f64_with_default(
     }
 }
 
+fn build_poly_sum(var: &str, degree: usize) -> Expr {
+    let x = Expr::Variable(var.to_string());
+    let mut terms = Vec::new();
+    for exp in 0..=degree {
+        let term = if exp == 0 {
+            Expr::Constant(Rational::one())
+        } else if exp == 1 {
+            x.clone()
+        } else {
+            Expr::Pow(x.clone().boxed(), Expr::integer(exp as i64).boxed())
+        };
+        terms.push(term);
+    }
+    terms
+        .into_iter()
+        .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+        .unwrap_or_else(|| Expr::Constant(Rational::zero()))
+}
+
 fn assert_integral_expected(input: &str, expected: &str) {
     let expr = parse_expr(input).expect("parse expected integral input");
     let expected_expr = simplify_parse(expected);
@@ -1330,6 +1349,114 @@ fn rational_hermite_roundtrip_suite() {
     assert_eq!(cases.len(), 50, "expected 50 Hermite rational cases");
     for (input, samples) in cases {
         assert_rational_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn risch_handles_large_exp_polynomial() {
+    let poly = build_poly_sum("x", 60);
+    let expr = Expr::Mul(poly.boxed(), Expr::Exp(Expr::Variable("x".to_string()).boxed()).boxed());
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            assert!(
+                report.attempts.iter().any(|a| {
+                    a.strategy == Strategy::Risch && a.status == AttemptStatus::Succeeded
+                }),
+                "expected risch to succeed for large polynomial * exp"
+            );
+            let derivative = simplify_fully(differentiate("x", &result));
+            let target = simplify_fully(expr);
+            for sample in [0.1, 0.5, 1.2, 2.0] {
+                let lhs = eval_expr_f64(&derivative, "x", sample);
+                let rhs = eval_expr_f64(&target, "x", sample);
+                let delta = (lhs - rhs).abs();
+                assert!(
+                    delta < 1e-6,
+                    "risch roundtrip failure at x={sample}: {delta}"
+                );
+            }
+        }
+        other => panic!("expected integration for large exp polynomial, got {other:?}"),
+    }
+}
+
+#[test]
+fn algebraic_quadratic_roundtrip_suite() {
+    let samples = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
+    let cases = vec![
+        ("1/(x^2 + 1)^(1/2)", samples.clone()),
+        ("x/(x^2 + 1)^(1/2)", samples.clone()),
+        ("x^2/(x^2 + 1)^(1/2)", samples.clone()),
+        ("x^3/(x^2 + 1)^(1/2)", samples.clone()),
+        ("x^4/(x^2 + 1)^(1/2)", samples.clone()),
+        ("(x^2 + 1)^(1/2)", samples.clone()),
+        ("x*(x^2 + 1)^(1/2)", samples.clone()),
+        ("x^2*(x^2 + 1)^(1/2)", samples.clone()),
+        ("x^3*(x^2 + 1)^(1/2)", samples.clone()),
+        ("x^4*(x^2 + 1)^(1/2)", samples.clone()),
+        ("(x^2 + 1)^(3/2)", samples.clone()),
+        ("(x^2 + 1)^(5/2)", samples.clone()),
+        ("3*(x^2 + 1)^(3/2)", samples.clone()),
+        ("1/(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x/(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x^2/(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x^3/(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x^4/(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x*(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x^2*(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x^3*(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("x^4*(x^2 + 2*x + 5)^(1/2)", samples.clone()),
+        ("(x^2 + 2*x + 5)^(3/2)", samples.clone()),
+        ("(x^2 + 2*x + 5)^(5/2)", samples.clone()),
+        ("2*(x^2 + 2*x + 5)^(3/2)", samples.clone()),
+        ("1/(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x/(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x^2/(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x^3/(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x^4/(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x*(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x^2*(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x^3*(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("x^4*(2*x^2 + 1)^(1/2)", samples.clone()),
+        ("(2*x^2 + 1)^(3/2)", samples.clone()),
+        ("(2*x^2 + 1)^(5/2)", samples.clone()),
+        ("5*(2*x^2 + 1)^(3/2)", samples.clone()),
+        ("1/(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x/(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x^2/(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x^3/(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x^4/(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x*(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x^2*(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x^3*(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("x^4*(3*x^2 + 2*x + 2)^(1/2)", samples.clone()),
+        ("(3*x^2 + 2*x + 2)^(3/2)", samples.clone()),
+        ("(3*x^2 + 2*x + 2)^(5/2)", samples.clone()),
+        ("7*(3*x^2 + 2*x + 2)^(3/2)", samples.clone()),
+    ];
+
+    assert_eq!(cases.len(), 52, "expected 52 quadratic algebraic cases");
+    for (input, samples) in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn algebraic_non_elementary_suite() {
+    let cases = vec![
+        ("(x^3 + 1)^(1/2)", NonElementaryKind::SpecialFunctionNeeded),
+        ("1/(x^3 + 1)^(1/2)", NonElementaryKind::SpecialFunctionNeeded),
+        ("(x^3 + x + 1)^(3/2)", NonElementaryKind::SpecialFunctionNeeded),
+        ("(x^4 + 1)^(1/2)", NonElementaryKind::SpecialFunctionNeeded),
+        ("1/(x^4 + x + 1)^(1/2)", NonElementaryKind::SpecialFunctionNeeded),
+    ];
+
+    assert_eq!(cases.len(), 5, "expected 5 algebraic non-elementary cases");
+    for (input, expected) in cases {
+        assert_non_elementary(input, expected);
     }
 }
 

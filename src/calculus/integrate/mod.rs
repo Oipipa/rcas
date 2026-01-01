@@ -3,6 +3,7 @@ mod exponential;
 mod logarithmic;
 mod polynomial;
 mod rational;
+mod risch;
 mod risch_lite;
 mod trig;
 
@@ -12,6 +13,7 @@ use crate::factor::Poly;
 use crate::format::expr::pretty;
 use crate::polynomial::Polynomial;
 use crate::simplify::{normalize, simplify, simplify_fully};
+use num_bigint::BigInt;
 use num_traits::{One, Zero};
 use std::collections::{BTreeSet, HashMap};
 
@@ -24,6 +26,7 @@ pub use trig::is_trig;
 
 const TRANSFORM_SIZE_LIMIT: usize = 96;
 const TABULAR_STEP_LIMIT: usize = 8;
+const IBP_RECURSION_LIMIT: usize = 12;
 type ExprPoly = Polynomial<Expr>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +68,7 @@ pub enum Strategy {
     Substitution,
     IntegrationByParts,
     PartialFractions,
+    Risch,
     RischLite,
     MeijerG,
 }
@@ -224,6 +228,38 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                 });
             }
         }
+        let risch_outcome = risch::analyze(expr, var);
+        match risch_outcome {
+            risch::RischOutcome::Integrated { result, note } => {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::Risch,
+                    status: AttemptStatus::Succeeded,
+                    note: Some(note),
+                });
+                return IntegrationResult::Integrated {
+                    result: simplify(result),
+                    report: IntegrandReport {
+                        kind,
+                        reason: None,
+                        attempts,
+                    },
+                };
+            }
+            risch::RischOutcome::NonElementary { kind: ne_kind, note } => {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::Risch,
+                    status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind)),
+                    note: Some(note),
+                });
+            }
+            risch::RischOutcome::Indeterminate { note } => {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::Risch,
+                    status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
+                    note: Some(note),
+                });
+            }
+        }
         attempts.push(IntegrationAttempt {
             strategy: Strategy::MeijerG,
             status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("meijer-g expansion")),
@@ -352,6 +388,7 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     }
 
     let mut risch_non_elem: Option<NonElementaryKind> = None;
+    let mut risch_full_non_elem: Option<NonElementaryKind> = None;
     let mut risch_outcome = risch_lite::analyze(expr, var);
     if matches!(risch_outcome, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
         let retry = risch_lite::analyze(&original_expr, var);
@@ -394,13 +431,49 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             });
         }
     }
+    let risch_outcome = risch::analyze(expr, var);
+    match risch_outcome {
+        risch::RischOutcome::Integrated { result, note } => {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::Risch,
+                status: AttemptStatus::Succeeded,
+                note: Some(note),
+            });
+            return IntegrationResult::Integrated {
+                result: simplify(result),
+                report: IntegrandReport {
+                    kind,
+                    reason: None,
+                    attempts,
+                },
+            };
+        }
+        risch::RischOutcome::NonElementary { kind: ne_kind, note } => {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::Risch,
+                status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind.clone())),
+                note: Some(note),
+            });
+            if !matches!(kind, IntegrandKind::NonElementary(_)) {
+                kind = IntegrandKind::NonElementary(ne_kind.clone());
+            }
+            risch_full_non_elem = Some(ne_kind);
+        }
+        risch::RischOutcome::Indeterminate { note } => {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::Risch,
+                status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
+                note: Some(note),
+            });
+        }
+    }
     attempts.push(IntegrationAttempt {
         strategy: Strategy::MeijerG,
         status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("meijer-g expansion")),
         note: None,
     });
 
-    let reason = Some(match non_elem.or(risch_non_elem) {
+    let reason = Some(match non_elem.or(risch_full_non_elem).or(risch_non_elem) {
         Some(non_elem) => ReasonCode::NonElementary(non_elem),
         None => default_reason(&kind),
     });
@@ -1400,14 +1473,18 @@ fn integration_by_parts(expr: &Expr, var: &str) -> Option<(Expr, String)> {
         return Some(result);
     }
     let mut memo = HashMap::new();
-    integrate_by_parts_recursive(expr, var, &mut memo)
+    integrate_by_parts_recursive(expr, var, &mut memo, 0)
 }
 
 fn integrate_by_parts_recursive(
     expr: &Expr,
     var: &str,
     memo: &mut HashMap<Expr, Option<Expr>>,
+    depth: usize,
 ) -> Option<(Expr, String)> {
+    if depth >= IBP_RECURSION_LIMIT {
+        return None;
+    }
     if let Some(result) = memo.get(expr) {
         return result.clone().map(|r| (r, String::new()));
     }
@@ -1426,7 +1503,7 @@ fn integrate_by_parts_recursive(
     if !is_one_expr(&const_expr) {
         memo.insert(expr.clone(), None);
         let rest_expr = rebuild_product(Rational::one(), factors.clone());
-        if let Some((res, note)) = integrate_by_parts_recursive(&rest_expr, var, memo) {
+        if let Some((res, note)) = integrate_by_parts_recursive(&rest_expr, var, memo, depth + 1) {
             let scaled = simplify(Expr::Mul(const_expr.boxed(), res.boxed()));
             memo.insert(expr.clone(), Some(scaled.clone()));
             return Some((scaled, note));
@@ -1496,7 +1573,9 @@ fn integrate_by_parts_recursive(
             if candidate_size > TRANSFORM_SIZE_LIMIT || candidate_size > expr_size_current + 8 {
                 continue;
             }
-            if let Some(res) = integrate_by_parts_recursive(&candidate, var, memo).map(|r| r.0) {
+            if let Some(res) =
+                integrate_by_parts_recursive(&candidate, var, memo, depth + 1).map(|r| r.0)
+            {
                 integral_vdu = Some(res);
                 break;
             }
@@ -1723,6 +1802,17 @@ fn detect_non_elementary_core(expr: &Expr, var: &str) -> Option<NonElementaryKin
         Expr::Pow(base, exp) => {
             if is_pow_self(base, exp, var) {
                 return Some(NonElementaryKind::PowerSelf);
+            }
+            if let Expr::Constant(k) = &**exp {
+                if !k.is_integer() {
+                    if let Some(deg) = polynomial_degree(base, var) {
+                        if deg >= 2 {
+                            if k.denom() != &BigInt::from(2) || deg > 2 {
+                                return Some(NonElementaryKind::SpecialFunctionNeeded);
+                            }
+                        }
+                    }
+                }
             }
         }
         Expr::Div(num, den) => {
