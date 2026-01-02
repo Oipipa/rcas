@@ -4,12 +4,15 @@ use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, ToPrimitive, Zero};
 
-use crate::diff_field::{ExtensionKind, FieldElement, Tower};
-use crate::expr::{Expr, Rational};
-use crate::polynomial::{Poly, Polynomial};
+use super::diff_field::{ExtensionKind, FieldElement, Tower};
+use crate::core::expr::{Expr, Rational};
+use crate::core::polynomial::{Poly, Polynomial};
 use crate::simplify::{normalize, simplify_fully};
 
-use super::{NonElementaryKind, contains_var, polynomial, rational};
+use crate::calculus::integrate::{
+    NonElementaryKind, contains_var, flatten_product, log_abs, polynomial, rational,
+    rebuild_product,
+};
 
 type ExprPoly = Polynomial<Expr>;
 
@@ -404,7 +407,7 @@ fn integrate_exp_rational(expr_sym: &Expr, var: &str, tower: &Tower, a_expr: &Ex
                     note: "exp linear base integration failed".to_string(),
                 };
             };
-            let log_term = Expr::Mul(c_expr.boxed(), super::log_abs(den_expr).boxed());
+            let log_term = Expr::Mul(c_expr.boxed(), log_abs(den_expr).boxed());
             pieces.push(simplify_fully(Expr::Add(log_term.boxed(), base_term.boxed())));
             continue;
         }
@@ -931,7 +934,7 @@ fn integrate_algebraic_term(
     base_expr: &Expr,
     base_poly: &Poly,
 ) -> Option<Expr> {
-    let (const_factor, factors) = super::flatten_product(expr);
+    let (const_factor, factors) = flatten_product(expr);
     if const_factor.is_zero() {
         return Some(Expr::Constant(Rational::zero()));
     }
@@ -952,7 +955,7 @@ fn integrate_algebraic_term(
         }
     }
 
-    let rest_expr = super::rebuild_product(const_factor, rest_factors);
+    let rest_expr = rebuild_product(const_factor, rest_factors);
     let mut rest_poly = Poly::from_expr(&rest_expr, var)?;
     if rest_poly.is_zero() {
         return Some(Expr::Constant(Rational::zero()));
@@ -990,7 +993,7 @@ fn integrate_algebraic_term(
 }
 
 fn factor_out_var(expr: &Expr, var: &str) -> Option<Expr> {
-    let (const_factor, mut factors) = super::flatten_product(expr);
+    let (const_factor, mut factors) = flatten_product(expr);
     let mut removed = false;
     let mut idx = 0;
     while idx < factors.len() {
@@ -1041,7 +1044,7 @@ fn factor_out_var(expr: &Expr, var: &str) -> Option<Expr> {
         }
         return None;
     }
-    Some(super::rebuild_product(const_factor, factors))
+    Some(rebuild_product(const_factor, factors))
 }
 
 fn divide_out_var(expr: &Expr, var: &str) -> Option<Expr> {
@@ -1108,7 +1111,7 @@ fn even_poly_to_u(poly: &Poly) -> Option<Poly> {
 #[cfg(test)]
 mod algebraic_even_reduction_tests {
     use super::*;
-    use crate::parser::parse_expr;
+    use crate::core::parser::parse_expr;
 
     #[test]
     fn reduces_quartic_even_base_odd_integrand() {
@@ -1221,7 +1224,7 @@ fn integrate_poly_over_sqrt_quadratic(poly: &Poly, base_poly: &Poly, var: &str) 
 
     let max_deg = shifted.degree().unwrap_or(0);
     let mut integrals: Vec<Expr> = Vec::with_capacity(max_deg + 1);
-    integrals.push(super::log_abs(Expr::Add(
+    integrals.push(log_abs(Expr::Add(
         u_expr.clone().boxed(),
         sqrt_expr.clone().boxed(),
     )));
@@ -1325,7 +1328,7 @@ fn integrate_poly_over_sqrt_quadratic_power(
         Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
             .boxed(),
     );
-    let log_expr = super::log_abs(Expr::Add(
+    let log_expr = log_abs(Expr::Add(
         u_expr.clone().boxed(),
         sqrt_expr.clone().boxed(),
     ));
@@ -1372,7 +1375,7 @@ fn monomial_integral(
     if ctx.d.is_zero() {
         let k = exp as i64 - (2 * power as i64 + 1);
         let result = if k == -1 {
-            super::log_abs(ctx.u_expr.clone())
+            log_abs(ctx.u_expr.clone())
         } else {
             let new_exp = k + 1;
             let denom = Rational::from_integer(BigInt::from(new_exp));
@@ -1908,7 +1911,7 @@ fn integrate_log_term_if_constant(num: &Expr, denom: &Expr, tower: &Tower) -> Op
     }
     Some(simplify_fully(Expr::Mul(
         ratio.boxed(),
-        super::log_abs(denom.clone()).boxed(),
+        log_abs(denom.clone()).boxed(),
     )))
 }
 

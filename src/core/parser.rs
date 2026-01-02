@@ -1,5 +1,5 @@
-use crate::error::{CasError, Result};
-use crate::expr::{Expr, Rational};
+use crate::core::error::{CasError, Result};
+use crate::core::expr::{Expr, Rational};
 use nom::IResult;
 use nom::branch::alt;
 use nom::bytes::complete::tag;

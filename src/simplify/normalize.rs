@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::expr::{Expr, Rational};
-use crate::polynomial::Poly;
+use crate::core::expr::{Expr, Rational};
+use crate::core::polynomial::Poly;
 use crate::simplify::{simplify_add, simplify_fully, simplify_mul, simplify_neg, simplify_pow, simplify_sub};
 use num_traits::{One, Signed, ToPrimitive, Zero};
 

@@ -1,7 +1,7 @@
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 
-use crate::expr::{Expr, Rational};
+use crate::core::expr::{Expr, Rational};
 use crate::simplify::{simplify, simplify_fully};
 use num_bigint::BigInt;
 use num_integer::Integer;

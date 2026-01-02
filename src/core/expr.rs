@@ -89,7 +89,7 @@ impl Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", crate::format::pretty(self))
+        write!(f, "{}", crate::ui::pretty(self))
     }
 }
 

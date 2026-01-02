@@ -1,5 +1,5 @@
-use crate::expr::{Expr, Rational};
-use crate::factor::{factor_polynomial, Factorization, Poly};
+use crate::core::expr::{Expr, Rational};
+use crate::core::factor::{factor_polynomial, Factorization, Poly};
 use crate::simplify::simplify;
 use super::{flatten_product, log_abs, rebuild_product};
 use num_bigint::BigInt;

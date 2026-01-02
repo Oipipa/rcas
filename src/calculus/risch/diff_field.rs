@@ -5,9 +5,9 @@ use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive};
 
 use crate::calculus::differentiate;
-use crate::error::{CasError, Result};
-use crate::expr::{Expr, Rational, one, zero};
-use crate::polynomial::Polynomial;
+use crate::core::error::{CasError, Result};
+use crate::core::expr::{Expr, Rational, one, zero};
+use crate::core::polynomial::Polynomial;
 use crate::simplify::simplify_fully;
 
 type ExprPoly = Polynomial<Expr>;

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::expr::{Expr, Rational, one, zero};
+use crate::core::expr::{Expr, Rational, one, zero};
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 

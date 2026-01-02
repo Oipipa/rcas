@@ -1,10 +1,11 @@
-use crate::expr::Expr;
-use crate::format::pretty;
+use crate::core::expr::Expr;
 use crate::solver::{LinearDiagnostics, LinearResult, NonLinearStatus, SolveResult};
 use num_traits::Zero;
 
+use super::pretty;
+
 /// Render a `SolveResult` into human-readable lines for CLI/examples.
-pub fn pretty_solve_result(result: &SolveResult) -> Vec<String> {
+pub fn solve_summary(result: &SolveResult) -> Vec<String> {
     match result {
         SolveResult::Linear(linear) => pretty_linear_result(linear),
         SolveResult::NonLinear(info) => {

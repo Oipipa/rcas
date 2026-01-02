@@ -1,4 +1,4 @@
-use crate::expr::Expr;
+use crate::core::expr::Expr;
 use num_rational::BigRational;
 
 pub fn pretty(expr: &Expr) -> String {
@@ -86,7 +86,9 @@ pub fn pretty(expr: &Expr) -> String {
 fn split_neg(expr: &Expr) -> (bool, Expr) {
     match expr {
         Expr::Neg(inner) => (true, *inner.clone()),
-        Expr::Constant(r) if r < &BigRational::from_integer(0.into()) => (true, Expr::Constant(-r)),
+        Expr::Constant(r) if r < &BigRational::from_integer(0.into()) => {
+            (true, Expr::Constant(-r))
+        }
         other => (false, other.clone()),
     }
 }

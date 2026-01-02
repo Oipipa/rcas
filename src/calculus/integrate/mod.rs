@@ -1,17 +1,16 @@
 mod common;
 mod exponential;
 mod logarithmic;
-mod polynomial;
-mod rational;
-mod risch;
-mod risch_lite;
+pub(crate) mod polynomial;
+pub(crate) mod rational;
 mod trig;
 
 use crate::calculus::differentiate;
-use crate::expr::{Expr, Rational};
-use crate::factor::Poly;
-use crate::format::expr::pretty;
-use crate::polynomial::Polynomial;
+use crate::calculus::risch::{risch, risch_lite};
+use crate::core::expr::{Expr, Rational};
+use crate::core::factor::Poly;
+use crate::ui::pretty;
+use crate::core::polynomial::Polynomial;
 use crate::simplify::{normalize, simplify, simplify_fully};
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
@@ -861,7 +860,7 @@ fn integrate_with_respect_to_inner(outer: &Expr, inner: &Expr) -> Option<Expr> {
     }
 }
 
-fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
+pub(crate) fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
     let expr_norm = simplify_fully(expr.clone());
     let target_norm = simplify_fully(target.clone());
 
@@ -1148,7 +1147,7 @@ pub(crate) fn rebuild_product(constant: Rational, mut factors: Vec<Expr>) -> Exp
         .unwrap()
 }
 
-fn split_constant_factors(expr: &Expr, var: &str) -> (Expr, Vec<Expr>) {
+pub(crate) fn split_constant_factors(expr: &Expr, var: &str) -> (Expr, Vec<Expr>) {
     let (const_factor, factors) = flatten_product(expr);
     let mut const_factors = Vec::new();
     let mut var_factors = Vec::new();
@@ -1187,7 +1186,7 @@ fn combine_algebraic_factors(factors: Vec<Expr>, var: &str) -> Vec<Expr> {
     others
 }
 
-fn apply_constant_factor(const_factor: Expr, expr: Expr) -> Expr {
+pub(crate) fn apply_constant_factor(const_factor: Expr, expr: Expr) -> Expr {
     if is_one_expr(&const_factor) {
         expr
     } else {
@@ -1290,7 +1289,7 @@ fn distribute_product_with_addition(
     }
 }
 
-fn to_rational_candidate(constant: Rational, factors: &[Expr]) -> Option<Expr> {
+pub(crate) fn to_rational_candidate(constant: Rational, factors: &[Expr]) -> Option<Expr> {
     let mut num_factors = Vec::new();
     let mut den_factors = Vec::new();
 
@@ -1362,7 +1361,7 @@ fn inner_candidate(expr: &Expr) -> Option<&Expr> {
 #[cfg(test)]
 mod substitution_internal_tests {
     use super::*;
-    use crate::parser::parse_expr;
+    use crate::core::parser::parse_expr;
 
     #[test]
     fn detects_basic_u_sub() {
@@ -1786,7 +1785,7 @@ fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
     }
 }
 
-fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
+pub(crate) fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
     if is_constant_wrt(expr, var) {
         return None;
     }

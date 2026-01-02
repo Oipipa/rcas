@@ -1,5 +1,5 @@
-use crate::expr::{Expr, Rational};
-pub use crate::polynomial::Poly;
+use crate::core::expr::{Expr, Rational};
+pub use crate::core::polynomial::Poly;
 use crate::simplify::simplify;
 use num_bigint::BigInt;
 use num_integer::Integer;

@@ -3,18 +3,19 @@ use std::collections::{HashMap, HashSet};
 use num_traits::One;
 
 use crate::calculus::differentiate;
-use crate::expr::{Expr, Rational};
+use crate::core::expr::{Expr, Rational};
 use crate::simplify::{simplify, simplify_fully};
 
-use super::{
-    apply_constant_factor, constant_ratio, contains_var, detect_non_elementary, flatten_product,
-    log_abs, rebuild_product, split_constant_factors, to_rational_candidate,
+use crate::calculus::integrate::{
+    NonElementaryKind, apply_constant_factor, constant_ratio, contains_var, detect_non_elementary,
+    flatten_product, log_abs, polynomial, rational, rebuild_product, split_constant_factors,
+    to_rational_candidate,
 };
 
 #[derive(Debug, Clone)]
 pub enum RischLiteOutcome {
     Integrated { result: Expr, note: String },
-    NonElementary { kind: super::NonElementaryKind, note: String },
+    NonElementary { kind: NonElementaryKind, note: String },
     Indeterminate { note: String },
 }
 
@@ -429,8 +430,8 @@ fn integrate_in_tower(expr: &Expr, var: &str, tower: &Tower) -> Option<(Expr, St
             continue;
         }
 
-        let result_t = super::polynomial::integrate(&integrand_t, &t_name)
-            .or_else(|| super::rational::integrate(&integrand_t, &t_name));
+        let result_t = polynomial::integrate(&integrand_t, &t_name)
+            .or_else(|| rational::integrate(&integrand_t, &t_name));
         let Some(result_t) = result_t else {
             continue;
         };

@@ -1,23 +1,11 @@
-use rcas::{integrate, parse_expr, pretty_integration_result};
+use rcas::prelude::inte;
 
 fn main() {
-    demo("non-elementary exp(x^2)", "exp(x^2)");
-    demo("tricky by-parts x*sin(x)", "1/(x^2*(x^4+1)^3/4)");
-}
+    let expr = "1/(1+sin(x/x))";
+    let var = "x";
 
-fn demo(label: &str, input: &str) {
-    println!("=== {label}: {input} ===");
-    let expr = match parse_expr(input) {
-        Ok(e) => e,
-        Err(err) => {
-            eprintln!("parse error for {input}: {err}");
-            return;
-        }
-    };
-
-    let result = integrate("x", &expr);
-    for line in pretty_integration_result(&result) {
-        println!("{line}");
+    match inte(expr, var) {
+        Ok(result) => println!("integrate {expr} d{var} = {result}"),
+        Err(err) => eprintln!("parse error for {expr}: {err}"),
     }
-    println!();
 }

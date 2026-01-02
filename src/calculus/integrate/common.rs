@@ -1,4 +1,4 @@
-use crate::expr::{Expr, Rational};
+use crate::core::expr::{Expr, Rational};
 use crate::simplify::{simplify, simplify_fully};
 use num_traits::{One, Zero};
 

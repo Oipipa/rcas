@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::expr::{Expr, Rational};
+use crate::core::expr::{Expr, Rational};
 use crate::simplify::simplify;
 use num_traits::{One, Signed, Zero};
 

@@ -1,4 +1,4 @@
-use crate::expr::Expr;
+use crate::core::expr::Expr;
 
 /// Substitute variable `var` with `replacement` throughout `expr`.
 pub fn substitute(expr: &Expr, var: &str, replacement: &Expr) -> Expr {
