@@ -1,7 +1,7 @@
 use rcas::prelude::inte;
 
 fn main() {
-    let expr = "1/(1+sin(x/x))";
+    let expr = "tan(log(x))^3/x";
     let var = "x";
 
     match inte(expr, var) {

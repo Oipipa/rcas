@@ -1579,6 +1579,17 @@ fn algebraic_quadratic_roundtrip_suite() {
 }
 
 #[test]
+fn algebraic_linear_sqrt_roundtrip_suite() {
+    let samples = vec![0.25, 0.5, 1.0, 2.0];
+    let cases = vec!["1/(x^(1/2)*(x+1))"];
+
+    assert_eq!(cases.len(), 1, "expected 1 linear sqrt case");
+    for input in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn algebraic_quadratic_inverse_power_suite() {
     let samples = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
     let cases = vec![
@@ -2165,6 +2176,128 @@ fn substitution_nontrivial_suite() {
     ];
 
     assert_eq!(cases.len(), 30, "expected 30 non-trivial substitution cases");
+    for (input, expected) in cases {
+        assert_substitution_integral(input, expected);
+    }
+}
+
+#[test]
+fn substitution_function_of_inner_suite() {
+    let cases = vec![
+        (
+            "tan(log(x))^3/x",
+            "1/2*tan(log(x))^2 - 1/2*log(abs(tan(log(x))^2 + 1))",
+        ),
+        ("sec(log(x))^2/x", "tan(log(x))"),
+        ("sin(log(x))/x", "-cos(log(x))"),
+        (
+            "(sin(log(x)) + cos(log(x)))/x",
+            "-cos(log(x)) + sin(log(x))",
+        ),
+        ("1/log(x)/x", "log(abs(log(x)))"),
+        (
+            "log(x^2 + 1)^2*(2*x/(x^2 + 1))",
+            "1/3*log(x^2 + 1)^3",
+        ),
+        (
+            "(log(x^2 + 1) + log(x^2 + 1)^2)*(2*x/(x^2 + 1))",
+            "1/2*log(x^2 + 1)^2 + 1/3*log(x^2 + 1)^3",
+        ),
+        (
+            "sin(log(x^2 + 1))*(2*x/(x^2 + 1))",
+            "-cos(log(x^2 + 1))",
+        ),
+        (
+            "(sin(log(x^2 + 1)) + cos(log(x^2 + 1)))*(2*x/(x^2 + 1))",
+            "-cos(log(x^2 + 1)) + sin(log(x^2 + 1))",
+        ),
+        (
+            "(tan(log(x^2 + 1))^2 + 1)*(2*x/(x^2 + 1))",
+            "tan(log(x^2 + 1))",
+        ),
+        (
+            "1/log(x^2 + 1)*(2*x/(x^2 + 1))",
+            "log(abs(log(x^2 + 1)))",
+        ),
+        (
+            "log(log(x^2 + 1))*(2*x/(x^2 + 1))",
+            "log(x^2 + 1)*log(abs(log(x^2 + 1))) - log(x^2 + 1)",
+        ),
+        (
+            "(log(x^2 + 1)^3 + 1/log(x^2 + 1))*(2*x/(x^2 + 1))",
+            "1/4*log(x^2 + 1)^4 + log(abs(log(x^2 + 1)))",
+        ),
+        (
+            "(exp(x^2 + 1) + sin(x^2 + 1))*2*x",
+            "exp(x^2 + 1) - cos(x^2 + 1)",
+        ),
+        (
+            "(x^2 + 1 + exp(x^2 + 1))*2*x",
+            "1/2*(x^2 + 1)^2 + exp(x^2 + 1)",
+        ),
+        (
+            "(1/(x^2 + 1) + (x^2 + 1)^2)*2*x",
+            "log(abs(x^2 + 1)) + 1/3*(x^2 + 1)^3",
+        ),
+        (
+            "((x^2 + 1)^2 + cos(x^2 + 1))*2*x",
+            "1/3*(x^2 + 1)^3 + sin(x^2 + 1)",
+        ),
+        (
+            "(tan(x^2 + 1) + x^2 + 1)*2*x",
+            "-log(abs(cos(x^2 + 1))) + 1/2*(x^2 + 1)^2",
+        ),
+        (
+            "(log(x^2 + 1) + 1/(x^2 + 1))*2*x",
+            "(x^2 + 1)*log(abs(x^2 + 1)) - (x^2 + 1) + log(abs(x^2 + 1))",
+        ),
+        (
+            "(exp(x^2 + x + 1) + (x^2 + x + 1)^2)*(2*x + 1)",
+            "exp(x^2 + x + 1) + 1/3*(x^2 + x + 1)^3",
+        ),
+        (
+            "(sin(x^2 + x + 1) + cos(x^2 + x + 1))*(2*x + 1)",
+            "-cos(x^2 + x + 1) + sin(x^2 + x + 1)",
+        ),
+        (
+            "(x^2 + x + 1)/(1 + (x^2 + x + 1)^2)*(2*x + 1)",
+            "1/2*log(abs((x^2 + x + 1)^2 + 1))",
+        ),
+        (
+            "(exp(x^2 + x) + (x^2 + x))*(2*x + 1)",
+            "exp(x^2 + x) + 1/2*(x^2 + x)^2",
+        ),
+        (
+            "(exp(sin(x)) + sin(x)^2)*cos(x)",
+            "exp(sin(x)) + 1/3*sin(x)^3",
+        ),
+        (
+            "(1/sin(x) + sin(x))*cos(x)",
+            "log(abs(sin(x))) + 1/2*sin(x)^2",
+        ),
+        (
+            "(tan(sin(x)) + 1)*cos(x)",
+            "-log(abs(cos(sin(x)))) + sin(x)",
+        ),
+        (
+            "-sin(x)*(exp(cos(x)) + cos(x))",
+            "exp(cos(x)) + 1/2*cos(x)^2",
+        ),
+        (
+            "(exp(x) + exp(x)^2)*exp(x)",
+            "1/2*exp(x)^2 + 1/3*exp(x)^3",
+        ),
+        (
+            "(exp(sin(x^2)) + sin(x^2)^2)*cos(x^2)*2*x",
+            "exp(sin(x^2)) + 1/3*sin(x^2)^3",
+        ),
+        (
+            "(sin(sin(x^2)) + cos(sin(x^2)))*cos(x^2)*2*x",
+            "-cos(sin(x^2)) + sin(sin(x^2))",
+        ),
+    ];
+
+    assert_eq!(cases.len(), 30, "expected 30 function-of-inner cases");
     for (input, expected) in cases {
         assert_substitution_integral(input, expected);
     }

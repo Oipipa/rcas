@@ -7,7 +7,7 @@ use num_traits::{One, ToPrimitive, Zero};
 use super::diff_field::{ExtensionKind, FieldElement, Tower};
 use crate::core::expr::{Expr, Rational};
 use crate::core::polynomial::{Poly, Polynomial};
-use crate::simplify::{normalize, simplify_fully};
+use crate::simplify::{normalize, simplify_fully, substitute};
 
 use crate::calculus::integrate::{
     NonElementaryKind, contains_var, flatten_product, log_abs, polynomial, rational,
@@ -70,6 +70,12 @@ fn analyze_algebraic(expr: &Expr, var: &str) -> Option<RischOutcome> {
     let base_poly = Poly::from_expr(&base, var)?;
     let degree = base_poly.degree().unwrap_or(0);
     if degree <= 1 {
+        if let Some(result) = integrate_linear_sqrt_substitution(expr, var, &base, &base_poly) {
+            return Some(RischOutcome::Integrated {
+                result: simplify_fully(result),
+                note: "algebraic linear sqrt substitution".to_string(),
+            });
+        }
         return None;
     }
     if degree > 2 {
@@ -127,6 +133,152 @@ fn integrate_even_base_odd_substitution(
     Some(simplify_fully(crate::simplify::substitute(
         &scaled, u_var, &x_sq,
     )))
+}
+
+fn integrate_linear_sqrt_substitution(
+    expr: &Expr,
+    var: &str,
+    base_expr: &Expr,
+    base_poly: &Poly,
+) -> Option<Expr> {
+    if base_poly.degree()? != 1 {
+        return None;
+    }
+    let a = base_poly.coeff(1);
+    if a.is_zero() {
+        return None;
+    }
+    let b = base_poly.coeff(0);
+    let base_norm = normalize(base_expr.clone());
+
+    let u_name = fresh_symbol(expr, "__u");
+    let u_expr = Expr::Variable(u_name.clone());
+    let rewritten = rewrite_linear_sqrt_expr(expr, &base_norm, &u_expr)?;
+
+    let u_sq = Expr::Pow(u_expr.clone().boxed(), Expr::integer(2).boxed());
+    let x_sub = Expr::Div(
+        Expr::Sub(u_sq.clone().boxed(), Expr::Constant(b.clone()).boxed()).boxed(),
+        Expr::Constant(a.clone()).boxed(),
+    );
+    let rewritten = simplify_fully(substitute(&rewritten, var, &x_sub));
+    let dx_du = Expr::Div(
+        Expr::Mul(
+            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+            u_expr.clone().boxed(),
+        )
+        .boxed(),
+        Expr::Constant(a.clone()).boxed(),
+    );
+    let integrand_u = simplify_fully(Expr::Mul(rewritten.boxed(), dx_du.boxed()));
+    let result_u = integrate_in_base(&integrand_u, &u_name)?;
+
+    let sqrt_expr = Expr::Pow(
+        base_norm.boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+            .boxed(),
+    );
+    let restored = substitute(&result_u, &u_name, &sqrt_expr);
+    Some(simplify_fully(restored))
+}
+
+fn rewrite_linear_sqrt_expr(expr: &Expr, base_norm: &Expr, u_expr: &Expr) -> Option<Expr> {
+    if normalize(expr.clone()) == *base_norm {
+        return Some(Expr::Pow(
+            u_expr.clone().boxed(),
+            Expr::integer(2).boxed(),
+        ));
+    }
+
+    match expr {
+        Expr::Constant(_) | Expr::Variable(_) => Some(expr.clone()),
+        Expr::Add(a, b) => Some(Expr::Add(
+            rewrite_linear_sqrt_expr(a, base_norm, u_expr)?.boxed(),
+            rewrite_linear_sqrt_expr(b, base_norm, u_expr)?.boxed(),
+        )),
+        Expr::Sub(a, b) => Some(Expr::Sub(
+            rewrite_linear_sqrt_expr(a, base_norm, u_expr)?.boxed(),
+            rewrite_linear_sqrt_expr(b, base_norm, u_expr)?.boxed(),
+        )),
+        Expr::Mul(a, b) => Some(Expr::Mul(
+            rewrite_linear_sqrt_expr(a, base_norm, u_expr)?.boxed(),
+            rewrite_linear_sqrt_expr(b, base_norm, u_expr)?.boxed(),
+        )),
+        Expr::Div(a, b) => Some(Expr::Div(
+            rewrite_linear_sqrt_expr(a, base_norm, u_expr)?.boxed(),
+            rewrite_linear_sqrt_expr(b, base_norm, u_expr)?.boxed(),
+        )),
+        Expr::Neg(inner) => rewrite_linear_sqrt_expr(inner, base_norm, u_expr)
+            .map(|res| Expr::Neg(res.boxed())),
+        Expr::Pow(base, exp) => {
+            let exp_const = extract_rational_const(exp)?;
+            let base_norm_inner = normalize((**base).clone());
+            if !exp_const.is_integer() {
+                if is_half_integer(&exp_const) && base_norm_inner == *base_norm {
+                    let (q, r) = split_exponent(&exp_const)?;
+                    let power = 2 * q + r;
+                    return Some(pow_expr_signed(u_expr, power));
+                }
+                return None;
+            }
+            let base_replaced = rewrite_linear_sqrt_expr(base, base_norm, u_expr)?;
+            Some(Expr::Pow(base_replaced.boxed(), exp.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn fresh_symbol(expr: &Expr, base: &str) -> String {
+    let mut used = HashSet::new();
+    collect_vars(expr, &mut used);
+    if !used.contains(base) {
+        return base.to_string();
+    }
+    for idx in 1.. {
+        let candidate = format!("{base}{idx}");
+        if !used.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("symbol generation exhausted")
+}
+
+fn collect_vars(expr: &Expr, out: &mut HashSet<String>) {
+    match expr {
+        Expr::Variable(name) => {
+            out.insert(name.clone());
+        }
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b)
+        | Expr::Pow(a, b) => {
+            collect_vars(a, out);
+            collect_vars(b, out);
+        }
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Exp(inner)
+        | Expr::Log(inner)
+        | Expr::Abs(inner) => collect_vars(inner, out),
+        Expr::Constant(_) => {}
+    }
 }
 
 fn integrate_in_tower(expr_sym: &Expr, var: &str, tower: &Tower) -> RischStep {

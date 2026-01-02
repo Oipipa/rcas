@@ -11,10 +11,10 @@ use crate::core::expr::{Expr, Rational};
 use crate::core::factor::Poly;
 use crate::ui::pretty;
 use crate::core::polynomial::Polynomial;
-use crate::simplify::{normalize, simplify, simplify_fully};
+use crate::simplify::{normalize, simplify, simplify_fully, substitute};
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub(crate) use common::{coeff_of_var, linear_parts};
 pub use exponential::is_exp;
@@ -306,7 +306,11 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         });
     } else {
         let mut sub_result = None;
-        for candidate in [&simplified_for_sub, expr] {
+        let mut sub_candidates: Vec<&Expr> = vec![&simplified_for_sub, expr];
+        if &original_expr != expr && &original_expr != &simplified_for_sub {
+            sub_candidates.push(&original_expr);
+        }
+        for candidate in sub_candidates {
             if let Some(result) = integrate_by_substitution(candidate, var) {
                 sub_result = Some(result);
                 break;
@@ -625,6 +629,10 @@ fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
         }
     }
 
+    if let Some(result) = integrate_function_of_inner(expr, var) {
+        return Some(result);
+    }
+
     None
 }
 
@@ -858,6 +866,282 @@ fn integrate_with_respect_to_inner(outer: &Expr, inner: &Expr) -> Option<Expr> {
         }
         _ => None,
     }
+}
+
+fn integrate_function_of_inner(expr: &Expr, var: &str) -> Option<Expr> {
+    let mut candidates = collect_subexpr_candidates(expr, var);
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|a, b| expr_size(b).cmp(&expr_size(a)));
+    let u_name = fresh_var_name(expr, var, "u");
+    let u_var = Expr::Variable(u_name.clone());
+
+    for candidate in candidates {
+        let deriv = simplify_fully(differentiate(var, &candidate));
+        if deriv.is_zero() {
+            continue;
+        }
+        let ratio = simplify_fully(Expr::Div(expr.clone().boxed(), deriv.clone().boxed()));
+        let candidate_norm = normalize(candidate.clone());
+        if expr_size(&ratio) <= TRANSFORM_SIZE_LIMIT {
+            if let Some(result) = try_function_of_inner_ratio(
+                &ratio,
+                &candidate,
+                &candidate_norm,
+                &u_name,
+                &u_var,
+                var,
+            ) {
+                return Some(result);
+            }
+        }
+        if let Some(factor_ratio) = factor_cancel_ratio(expr, &deriv, var) {
+            if expr_size(&factor_ratio) <= TRANSFORM_SIZE_LIMIT {
+                if let Some(result) = try_function_of_inner_ratio(
+                    &factor_ratio,
+                    &candidate,
+                    &candidate_norm,
+                    &u_name,
+                    &u_var,
+                    var,
+                ) {
+                    return Some(result);
+                }
+            }
+            let simplified = simplify_fully(factor_ratio);
+            if expr_size(&simplified) <= TRANSFORM_SIZE_LIMIT {
+                if let Some(result) = try_function_of_inner_ratio(
+                    &simplified,
+                    &candidate,
+                    &candidate_norm,
+                    &u_name,
+                    &u_var,
+                    var,
+                ) {
+                    return Some(result);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn try_function_of_inner_ratio(
+    ratio: &Expr,
+    candidate: &Expr,
+    candidate_norm: &Expr,
+    u_name: &str,
+    u_var: &Expr,
+    var: &str,
+) -> Option<Expr> {
+    if let Some(result) = integrate_in_substitution_var(ratio, candidate, u_name, u_var, var) {
+        return Some(result);
+    }
+    let ratio_norm = normalize(ratio.clone());
+    if candidate_norm != candidate || ratio_norm != *ratio {
+        if let Some(result) =
+            integrate_in_substitution_var(&ratio_norm, candidate_norm, u_name, u_var, var)
+        {
+            return Some(result);
+        }
+    }
+    None
+}
+
+fn integrate_in_substitution_var(
+    ratio: &Expr,
+    candidate: &Expr,
+    u_name: &str,
+    u_var: &Expr,
+    var: &str,
+) -> Option<Expr> {
+    if matches!(candidate, Expr::Variable(name) if name == var) {
+        return None;
+    }
+    let replaced = replace_expr(ratio, candidate, u_var);
+    if contains_var(&replaced, var) {
+        return None;
+    }
+    if expr_size(&replaced) > TRANSFORM_SIZE_LIMIT {
+        return None;
+    }
+    match integrate(u_name, &replaced) {
+        IntegrationResult::Integrated { result, .. } => {
+            let restored = substitute(&result, u_name, candidate);
+            Some(simplify(restored))
+        }
+        _ => None,
+    }
+}
+
+fn factor_cancel_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
+    let (expr_const, mut expr_factors) = flatten_product(expr);
+    let (target_const, target_factors) = flatten_product(target);
+    if target_const.is_zero() {
+        return None;
+    }
+
+    let ratio_const = expr_const / target_const;
+    let mut ratio_factors: Vec<Expr> = Vec::new();
+    let mut expr_norms: Vec<Expr> = expr_factors.iter().map(|f| normalize(f.clone())).collect();
+
+    for target_factor in target_factors {
+        let target_norm = normalize(target_factor.clone());
+        if let Some(idx) = expr_norms.iter().position(|f| *f == target_norm) {
+            expr_factors.remove(idx);
+            expr_norms.remove(idx);
+            continue;
+        }
+        let mut matched = None;
+        for (idx, factor) in expr_factors.iter().enumerate() {
+            if let Some(coeff) = constant_ratio(factor, &target_factor, var) {
+                if is_constant_wrt(&coeff, var) {
+                    matched = Some((idx, coeff));
+                    break;
+                }
+            }
+        }
+        if let Some((idx, coeff)) = matched {
+            expr_factors.remove(idx);
+            ratio_factors.push(coeff);
+        } else {
+            return None;
+        }
+    }
+
+    ratio_factors.append(&mut expr_factors);
+    if ratio_const.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    if ratio_const.is_one() {
+        return Some(rebuild_product(Rational::one(), ratio_factors));
+    }
+    ratio_factors.insert(0, Expr::Constant(ratio_const));
+    Some(rebuild_product(Rational::one(), ratio_factors))
+}
+
+fn collect_subexpr_candidates(expr: &Expr, var: &str) -> Vec<Expr> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    collect_subexpr_candidates_inner(expr, var, &mut seen, &mut out);
+    out
+}
+
+fn collect_subexpr_candidates_inner(
+    expr: &Expr,
+    var: &str,
+    seen: &mut HashSet<Expr>,
+    out: &mut Vec<Expr>,
+) {
+    if !contains_var(expr, var) {
+        return;
+    }
+    if !matches!(expr, Expr::Variable(name) if name == var) {
+        if seen.insert(expr.clone()) {
+            out.push(expr.clone());
+        }
+    }
+    match expr {
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b)
+        | Expr::Pow(a, b) => {
+            collect_subexpr_candidates_inner(a, var, seen, out);
+            collect_subexpr_candidates_inner(b, var, seen, out);
+        }
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Exp(inner)
+        | Expr::Log(inner)
+        | Expr::Abs(inner) => {
+            collect_subexpr_candidates_inner(inner, var, seen, out);
+        }
+        Expr::Variable(_) | Expr::Constant(_) => {}
+    }
+}
+
+fn replace_expr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
+    if expr == target {
+        return replacement.clone();
+    }
+    match expr {
+        Expr::Add(a, b) => Expr::Add(
+            replace_expr(a, target, replacement).boxed(),
+            replace_expr(b, target, replacement).boxed(),
+        ),
+        Expr::Sub(a, b) => Expr::Sub(
+            replace_expr(a, target, replacement).boxed(),
+            replace_expr(b, target, replacement).boxed(),
+        ),
+        Expr::Mul(a, b) => Expr::Mul(
+            replace_expr(a, target, replacement).boxed(),
+            replace_expr(b, target, replacement).boxed(),
+        ),
+        Expr::Div(a, b) => Expr::Div(
+            replace_expr(a, target, replacement).boxed(),
+            replace_expr(b, target, replacement).boxed(),
+        ),
+        Expr::Pow(a, b) => Expr::Pow(
+            replace_expr(a, target, replacement).boxed(),
+            replace_expr(b, target, replacement).boxed(),
+        ),
+        Expr::Neg(inner) => Expr::Neg(replace_expr(inner, target, replacement).boxed()),
+        Expr::Sin(inner) => Expr::Sin(replace_expr(inner, target, replacement).boxed()),
+        Expr::Cos(inner) => Expr::Cos(replace_expr(inner, target, replacement).boxed()),
+        Expr::Tan(inner) => Expr::Tan(replace_expr(inner, target, replacement).boxed()),
+        Expr::Sec(inner) => Expr::Sec(replace_expr(inner, target, replacement).boxed()),
+        Expr::Csc(inner) => Expr::Csc(replace_expr(inner, target, replacement).boxed()),
+        Expr::Cot(inner) => Expr::Cot(replace_expr(inner, target, replacement).boxed()),
+        Expr::Atan(inner) => Expr::Atan(replace_expr(inner, target, replacement).boxed()),
+        Expr::Asin(inner) => Expr::Asin(replace_expr(inner, target, replacement).boxed()),
+        Expr::Acos(inner) => Expr::Acos(replace_expr(inner, target, replacement).boxed()),
+        Expr::Asec(inner) => Expr::Asec(replace_expr(inner, target, replacement).boxed()),
+        Expr::Acsc(inner) => Expr::Acsc(replace_expr(inner, target, replacement).boxed()),
+        Expr::Acot(inner) => Expr::Acot(replace_expr(inner, target, replacement).boxed()),
+        Expr::Sinh(inner) => Expr::Sinh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Cosh(inner) => Expr::Cosh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Tanh(inner) => Expr::Tanh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Asinh(inner) => Expr::Asinh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Acosh(inner) => Expr::Acosh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Atanh(inner) => Expr::Atanh(replace_expr(inner, target, replacement).boxed()),
+        Expr::Exp(inner) => Expr::Exp(replace_expr(inner, target, replacement).boxed()),
+        Expr::Log(inner) => Expr::Log(replace_expr(inner, target, replacement).boxed()),
+        Expr::Abs(inner) => Expr::Abs(replace_expr(inner, target, replacement).boxed()),
+        Expr::Variable(_) | Expr::Constant(_) => expr.clone(),
+    }
+}
+
+fn fresh_var_name(expr: &Expr, var: &str, base: &str) -> String {
+    if base != var && !contains_var(expr, base) {
+        return base.to_string();
+    }
+    for idx in 1..64 {
+        let candidate = format!("{base}{idx}");
+        if candidate != var && !contains_var(expr, &candidate) {
+            return candidate;
+        }
+    }
+    format!("{base}_sub")
 }
 
 pub(crate) fn constant_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
