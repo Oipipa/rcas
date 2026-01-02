@@ -1,7 +1,7 @@
 use rcas::prelude::inte;
 
 fn main() {
-    let expr = "tan(log(x))^3/x";
+    let expr = "(2*x-x^2)^1/2";
     let var = "x";
 
     match inte(expr, var) {

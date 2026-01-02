@@ -1446,6 +1446,21 @@ fn rational_hermite_roundtrip_suite() {
 }
 
 #[test]
+fn rational_cyclotomic_roundtrip_suite() {
+    let samples = vec![-2.0, -1.5, -0.5, 0.5, 1.5];
+    let mut cases = Vec::new();
+    for power in 1..=6 {
+        cases.push(format!("1/(x^4+1)^({power})"));
+        cases.push(format!("1/(x^5+1)^({power})"));
+    }
+
+    assert_eq!(cases.len(), 12, "expected 12 cyclotomic cases");
+    for input in cases {
+        assert_rational_roundtrip(&input, &samples);
+    }
+}
+
+#[test]
 fn rational_rothstein_trager_roundtrip_suite() {
     let cases: Vec<(&str, Vec<f64>)> = vec![
         ("(3*x^2 + 1)/(x^3 + x + 1)", vec![0.2, 0.8, 1.4]),

@@ -141,6 +141,7 @@ fn simplify_cached(expr: Expr, cache: &mut HashMap<Expr, Expr>) -> Expr {
         e => e,
     };
 
+    let result = simplify_imaginary_quadratic(result);
     cache.insert(key, result.clone());
     result
 }
@@ -640,4 +641,125 @@ fn mk_mul_list(mut items: Vec<Expr>) -> Expr {
     let mut iter = items.into_iter();
     let first = iter.next().unwrap();
     iter.fold(first, |acc, item| Expr::Mul(acc.boxed(), item.boxed()))
+}
+
+fn simplify_imaginary_quadratic(expr: Expr) -> Expr {
+    let (coeff, base) = split_coeff(&expr);
+    let mut factors = factors(&base);
+    let mut changed = false;
+    let mut coeff = coeff;
+
+    if let Some((idx_sqrt, sqrt_base, d)) = find_sqrt_u2_plus_d(&factors) {
+        if d.is_negative() {
+            if let Some(idx_pow) = factors.iter().position(is_neg_one_pow_neg_half) {
+                factors.swap_remove(idx_sqrt.max(idx_pow));
+                factors.swap_remove(idx_sqrt.min(idx_pow));
+                let neg_base = Expr::Neg(sqrt_base.boxed());
+                let new_sqrt = Expr::Pow(
+                    neg_base.boxed(),
+                    Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+                );
+                factors.push(new_sqrt);
+                coeff = -coeff;
+                changed = true;
+            }
+        }
+    }
+
+    if let Some((idx_log, u_expr, d)) = find_log_abs_u_plus_sqrt(&factors) {
+        if d.is_negative() {
+            if let Some(idx_pow) = factors.iter().position(is_neg_one_pow_neg_half) {
+                factors.swap_remove(idx_log.max(idx_pow));
+                factors.swap_remove(idx_log.min(idx_pow));
+                let denom = Expr::Pow(
+                    Expr::Constant(-d.clone()).boxed(),
+                    Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+                );
+                let acos_arg = Expr::Div(u_expr.boxed(), denom.boxed());
+                factors.push(Expr::Acos(acos_arg.boxed()));
+                changed = true;
+            }
+        }
+    }
+
+    if !changed {
+        return expr;
+    }
+
+    let core = mk_mul_list(factors);
+    term_from(&coeff, core)
+}
+
+fn is_neg_one_pow_neg_half(expr: &Expr) -> bool {
+    match expr {
+        Expr::Pow(base, exp) => match (&**base, &**exp) {
+            (Expr::Constant(b), Expr::Constant(e)) => {
+                *b == -Rational::one() && *e == Rational::new((-1).into(), 2.into())
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn find_sqrt_u2_plus_d(factors: &[Expr]) -> Option<(usize, Expr, Rational)> {
+    for (idx, factor) in factors.iter().enumerate() {
+        let Expr::Pow(base, exp) = factor else { continue };
+        let Expr::Constant(exp) = &**exp else { continue };
+        if *exp != Rational::new(1.into(), 2.into()) {
+            continue;
+        }
+        if let Some((_u_expr, d)) = match_u2_plus_d(base) {
+            return Some((idx, base.as_ref().clone(), d));
+        }
+    }
+    None
+}
+
+fn find_log_abs_u_plus_sqrt(factors: &[Expr]) -> Option<(usize, Expr, Rational)> {
+    for (idx, factor) in factors.iter().enumerate() {
+        let Expr::Log(inner) = factor else { continue };
+        let Expr::Abs(abs_inner) = &**inner else { continue };
+        let terms = flatten_sum(abs_inner);
+        if terms.len() != 2 {
+            continue;
+        }
+        for (u_idx, u_term) in terms.iter().enumerate() {
+            let sqrt_term = terms.get(1 - u_idx)?;
+            let Expr::Pow(base, exp) = sqrt_term else { continue };
+            let Expr::Constant(exp) = &**exp else { continue };
+            if *exp != Rational::new(1.into(), 2.into()) {
+                continue;
+            }
+            if let Some((u_expr, d)) = match_u2_plus_d(base) {
+                if &u_expr == u_term {
+                    return Some((idx, u_expr, d));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn match_u2_plus_d(expr: &Expr) -> Option<(Expr, Rational)> {
+    let terms = flatten_sum(expr);
+    if terms.len() != 2 {
+        return None;
+    }
+    let mut u_expr = None;
+    let mut d_val = None;
+    for term in terms {
+        match term {
+            Expr::Pow(base, exp) => {
+                if let Expr::Constant(ref k) = *exp {
+                    if k.is_integer() && k.to_integer() == BigInt::from(2) {
+                        u_expr = Some(*base.clone());
+                    }
+                }
+            }
+            Expr::Constant(c) => d_val = Some(c),
+            _ => {}
+        }
+    }
+    Some((u_expr?, d_val?))
 }

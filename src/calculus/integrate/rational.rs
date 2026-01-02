@@ -72,7 +72,7 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
         if num_term.is_zero() {
             continue;
         }
-        let mut partial_fraction = None;
+        let mut partial_fraction = integrate_cyclotomic_quartic_quintic(&num_term, &den_term, var);
         if let Some(factorization) = factor_polynomial(&den_term.to_expr(var), var) {
             if !factorization.constant.is_zero()
                 && factorization
@@ -969,4 +969,491 @@ fn sum_exprs(exprs: Vec<Expr>) -> Expr {
         .into_iter()
         .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
         .unwrap()
+}
+
+#[derive(Clone, Debug)]
+struct QuadExt {
+    a: Rational,
+    b: Rational,
+    d: Rational,
+}
+
+impl QuadExt {
+    fn new(a: Rational, b: Rational, d: Rational) -> Self {
+        Self { a, b, d }
+    }
+
+    fn zero(d: &Rational) -> Self {
+        Self {
+            a: Rational::zero(),
+            b: Rational::zero(),
+            d: d.clone(),
+        }
+    }
+
+    fn one(d: &Rational) -> Self {
+        Self {
+            a: Rational::one(),
+            b: Rational::zero(),
+            d: d.clone(),
+        }
+    }
+
+    fn from_rational(value: Rational, d: &Rational) -> Self {
+        Self {
+            a: value,
+            b: Rational::zero(),
+            d: d.clone(),
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.a.is_zero() && self.b.is_zero()
+    }
+
+    fn inv(&self) -> Option<Self> {
+        let denom = self.a.clone() * self.a.clone() - self.b.clone() * self.b.clone() * self.d.clone();
+        if denom.is_zero() {
+            return None;
+        }
+        let scale = Rational::one() / denom;
+        Some(Self {
+            a: self.a.clone() * scale.clone(),
+            b: -self.b.clone() * scale,
+            d: self.d.clone(),
+        })
+    }
+
+    fn to_expr(&self) -> Expr {
+        if self.b.is_zero() {
+            return Expr::Constant(self.a.clone());
+        }
+        let sqrt_d = sqrt_rational_expr(&self.d);
+        let coeff_b = Expr::Constant(self.b.clone());
+        let b_term = Expr::Mul(coeff_b.boxed(), sqrt_d.boxed());
+        if self.a.is_zero() {
+            return b_term;
+        }
+        Expr::Add(Expr::Constant(self.a.clone()).boxed(), b_term.boxed())
+    }
+}
+
+impl std::ops::Neg for QuadExt {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self {
+            a: -self.a,
+            b: -self.b,
+            d: self.d,
+        }
+    }
+}
+
+impl std::ops::Add for QuadExt {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        debug_assert_eq!(self.d, other.d);
+        Self {
+            a: self.a + other.a,
+            b: self.b + other.b,
+            d: self.d,
+        }
+    }
+}
+
+impl std::ops::Sub for QuadExt {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        debug_assert_eq!(self.d, other.d);
+        Self {
+            a: self.a - other.a,
+            b: self.b - other.b,
+            d: self.d,
+        }
+    }
+}
+
+impl std::ops::Mul for QuadExt {
+    type Output = Self;
+
+    fn mul(self, other: Self) -> Self::Output {
+        debug_assert_eq!(self.d, other.d);
+        let a = self.a.clone() * other.a.clone() + self.b.clone() * other.b.clone() * self.d.clone();
+        let b = self.a * other.b + self.b * other.a;
+        Self { a, b, d: self.d }
+    }
+}
+
+impl std::ops::Div for QuadExt {
+    type Output = Self;
+
+    fn div(self, other: Self) -> Self::Output {
+        let inv = other.inv().expect("division by zero in QuadExt");
+        self * inv
+    }
+}
+
+#[derive(Clone, Debug)]
+struct QuadPoly {
+    coeffs: Vec<QuadExt>,
+}
+
+impl QuadPoly {
+    fn from_coeffs(mut coeffs: Vec<QuadExt>) -> Self {
+        while coeffs.last().map(|c| c.is_zero()).unwrap_or(false) {
+            coeffs.pop();
+        }
+        Self { coeffs }
+    }
+
+    fn coeff(&self, exp: usize, d: &Rational) -> QuadExt {
+        self.coeffs.get(exp).cloned().unwrap_or_else(|| QuadExt::zero(d))
+    }
+
+    fn mul(&self, other: &Self, d: &Rational) -> Self {
+        if self.coeffs.is_empty() || other.coeffs.is_empty() {
+            return Self { coeffs: Vec::new() };
+        }
+        let mut coeffs = vec![QuadExt::zero(d); self.coeffs.len() + other.coeffs.len() - 1];
+        for (i, a) in self.coeffs.iter().enumerate() {
+            for (j, b) in other.coeffs.iter().enumerate() {
+                let idx = i + j;
+                coeffs[idx] = coeffs[idx].clone() + a.clone() * b.clone();
+            }
+        }
+        Self::from_coeffs(coeffs)
+    }
+
+    fn to_expr(&self, var: &str, _d: &Rational) -> Expr {
+        if self.coeffs.is_empty() {
+            return Expr::Constant(Rational::zero());
+        }
+        let x = Expr::Variable(var.to_string());
+        let mut terms = Vec::new();
+        for (exp, coeff) in self.coeffs.iter().enumerate() {
+            if coeff.is_zero() {
+                continue;
+            }
+            let base = match exp {
+                0 => Expr::Constant(Rational::one()),
+                1 => x.clone(),
+                _ => Expr::Pow(x.clone().boxed(), Expr::integer(exp as i64).boxed()),
+            };
+            terms.push(Expr::Mul(coeff.to_expr().boxed(), base.boxed()));
+        }
+        sum_exprs(terms)
+    }
+}
+
+fn sqrt_rational_expr(value: &Rational) -> Expr {
+    Expr::Pow(
+        Expr::Constant(value.clone()).boxed(),
+        Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+    )
+}
+
+fn quad_poly_from_rational(poly: &Poly, d: &Rational) -> QuadPoly {
+    if poly.is_zero() {
+        return QuadPoly { coeffs: Vec::new() };
+    }
+    let degree = poly.degree().unwrap_or(0);
+    let mut coeffs = vec![QuadExt::zero(d); degree + 1];
+    for (exp, coeff) in poly.coeff_entries() {
+        coeffs[exp] = QuadExt::from_rational(coeff, d);
+    }
+    QuadPoly::from_coeffs(coeffs)
+}
+
+fn solve_linear_system_quad(mut matrix: Vec<Vec<QuadExt>>, d: &Rational) -> Option<Vec<QuadExt>> {
+    if matrix.is_empty() {
+        return None;
+    }
+    let rows = matrix.len();
+    let cols = matrix[0].len() - 1;
+
+    let mut row = 0;
+    for col in 0..cols {
+        let mut pivot = row;
+        while pivot < rows && matrix[pivot][col].is_zero() {
+            pivot += 1;
+        }
+        if pivot == rows {
+            continue;
+        }
+        matrix.swap(row, pivot);
+        let pivot_val = matrix[row][col].clone();
+        let inv = pivot_val.inv()?;
+        for c in col..=cols {
+            matrix[row][c] = matrix[row][c].clone() * inv.clone();
+        }
+        for r in 0..rows {
+            if r == row {
+                continue;
+            }
+            let factor = matrix[r][col].clone();
+            if factor.is_zero() {
+                continue;
+            }
+            for c in col..=cols {
+                let value = matrix[r][c].clone() - factor.clone() * matrix[row][c].clone();
+                matrix[r][c] = value;
+            }
+        }
+        row += 1;
+        if row == rows {
+            break;
+        }
+    }
+
+    let mut solution = vec![QuadExt::zero(d); cols];
+    for i in 0..cols.min(rows) {
+        solution[i] = matrix[i][cols].clone();
+    }
+    Some(solution)
+}
+
+fn integrate_cyclotomic_quartic_quintic(
+    numerator: &Poly,
+    denominator: &Poly,
+    var: &str,
+) -> Option<Expr> {
+    if poly_is_x4_plus_one(denominator) {
+        return integrate_x4_plus_one(numerator, var);
+    }
+    if poly_is_x5_plus_one(denominator) {
+        return integrate_x5_plus_one(numerator, var);
+    }
+    None
+}
+
+fn poly_is_x4_plus_one(poly: &Poly) -> bool {
+    if poly.degree() != Some(4) {
+        return false;
+    }
+    if poly.coeff(4) != Rational::one() || poly.coeff(0) != Rational::one() {
+        return false;
+    }
+    for (exp, coeff) in poly.coeff_entries() {
+        if exp != 0 && exp != 4 && !coeff.is_zero() {
+            return false;
+        }
+    }
+    true
+}
+
+fn poly_is_x5_plus_one(poly: &Poly) -> bool {
+    if poly.degree() != Some(5) {
+        return false;
+    }
+    if poly.coeff(5) != Rational::one() || poly.coeff(0) != Rational::one() {
+        return false;
+    }
+    for (exp, coeff) in poly.coeff_entries() {
+        if exp != 0 && exp != 5 && !coeff.is_zero() {
+            return false;
+        }
+    }
+    true
+}
+
+fn integrate_x4_plus_one(numerator: &Poly, var: &str) -> Option<Expr> {
+    let d = Rational::from_integer(2.into());
+    let sqrt = QuadExt::new(Rational::zero(), Rational::one(), d.clone());
+    let one = QuadExt::one(&d);
+    let minus_sqrt = QuadExt::new(Rational::zero(), -Rational::one(), d.clone());
+
+    let q_pos = QuadPoly::from_coeffs(vec![one.clone(), sqrt.clone(), one.clone()]);
+    let q_neg = QuadPoly::from_coeffs(vec![one.clone(), minus_sqrt.clone(), one.clone()]);
+    let x_poly = QuadPoly::from_coeffs(vec![QuadExt::zero(&d), one.clone()]);
+
+    let basis = vec![
+        q_neg.mul(&x_poly, &d),
+        q_neg.clone(),
+        q_pos.mul(&x_poly, &d),
+        q_pos.clone(),
+    ];
+
+    let degree = 4;
+    let mut matrix = vec![vec![QuadExt::zero(&d); degree + 1]; degree];
+    for (col, poly) in basis.iter().enumerate() {
+        for exp in 0..degree {
+            let coeff = poly.coeff(exp, &d);
+            if !coeff.is_zero() {
+                matrix[exp][col] = matrix[exp][col].clone() + coeff;
+            }
+        }
+    }
+
+    let num_quad = quad_poly_from_rational(numerator, &d);
+    for exp in 0..degree {
+        let coeff = num_quad.coeff(exp, &d);
+        if !coeff.is_zero() {
+            matrix[exp][degree] = coeff;
+        }
+    }
+
+    let solution = solve_linear_system_quad(matrix, &d)?;
+    if solution.len() != degree {
+        return None;
+    }
+
+    let mut terms = Vec::new();
+    let term = integrate_quadratic_term_quad(
+        solution[0].clone(),
+        solution[1].clone(),
+        &q_pos,
+        var,
+        &d,
+    )?;
+    terms.push(term);
+    let term = integrate_quadratic_term_quad(
+        solution[2].clone(),
+        solution[3].clone(),
+        &q_neg,
+        var,
+        &d,
+    )?;
+    terms.push(term);
+
+    Some(simplify(sum_exprs(terms)))
+}
+
+fn integrate_x5_plus_one(numerator: &Poly, var: &str) -> Option<Expr> {
+    let d = Rational::from_integer(5.into());
+    let sqrt = QuadExt::new(Rational::zero(), Rational::one(), d.clone());
+    let one = QuadExt::one(&d);
+    let two = QuadExt::from_rational(Rational::from_integer(2.into()), &d);
+
+    let neg_one = QuadExt::from_rational(Rational::from_integer((-1).into()), &d);
+    let a = (neg_one.clone() - sqrt.clone()) / two.clone();
+    let b = (neg_one + sqrt.clone()) / two;
+
+    let q_a = QuadPoly::from_coeffs(vec![one.clone(), a, one.clone()]);
+    let q_b = QuadPoly::from_coeffs(vec![one.clone(), b, one.clone()]);
+    let x_poly = QuadPoly::from_coeffs(vec![QuadExt::zero(&d), one.clone()]);
+    let linear = QuadPoly::from_coeffs(vec![one.clone(), one.clone()]);
+
+    let term_linear = q_a.mul(&q_b, &d);
+    let term_q_a = linear.mul(&q_b, &d);
+    let term_q_b = linear.mul(&q_a, &d);
+
+    let basis = vec![
+        term_linear,
+        term_q_a.mul(&x_poly, &d),
+        term_q_a,
+        term_q_b.mul(&x_poly, &d),
+        term_q_b,
+    ];
+
+    let degree = 5;
+    let mut matrix = vec![vec![QuadExt::zero(&d); degree + 1]; degree];
+    for (col, poly) in basis.iter().enumerate() {
+        for exp in 0..degree {
+            let coeff = poly.coeff(exp, &d);
+            if !coeff.is_zero() {
+                matrix[exp][col] = matrix[exp][col].clone() + coeff;
+            }
+        }
+    }
+
+    let num_quad = quad_poly_from_rational(numerator, &d);
+    for exp in 0..degree {
+        let coeff = num_quad.coeff(exp, &d);
+        if !coeff.is_zero() {
+            matrix[exp][degree] = coeff;
+        }
+    }
+
+    let solution = solve_linear_system_quad(matrix, &d)?;
+    if solution.len() != degree {
+        return None;
+    }
+
+    let mut terms = Vec::new();
+    let linear_expr = Expr::Add(
+        Expr::Variable(var.to_string()).boxed(),
+        Expr::Constant(Rational::one()).boxed(),
+    );
+    if !solution[0].is_zero() {
+        terms.push(Expr::Mul(
+            solution[0].to_expr().boxed(),
+            log_abs(linear_expr).boxed(),
+        ));
+    }
+
+    let term = integrate_quadratic_term_quad(
+        solution[1].clone(),
+        solution[2].clone(),
+        &q_a,
+        var,
+        &d,
+    )?;
+    terms.push(term);
+    let term = integrate_quadratic_term_quad(
+        solution[3].clone(),
+        solution[4].clone(),
+        &q_b,
+        var,
+        &d,
+    )?;
+    terms.push(term);
+
+    Some(simplify(sum_exprs(terms)))
+}
+
+fn integrate_quadratic_term_quad(
+    coeff_x: QuadExt,
+    coeff_const: QuadExt,
+    factor: &QuadPoly,
+    var: &str,
+    d: &Rational,
+) -> Option<Expr> {
+    if coeff_x.is_zero() && coeff_const.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+
+    let a = factor.coeff(2, d);
+    if a.is_zero() {
+        return None;
+    }
+    let b = factor.coeff(1, d);
+    let c = factor.coeff(0, d);
+    let two = QuadExt::from_rational(Rational::from_integer(2.into()), d);
+    let alpha = coeff_x.clone() / (two.clone() * a.clone());
+    let beta = coeff_const - alpha.clone() * b.clone();
+
+    let q_expr = factor.to_expr(var, d);
+    let mut parts: Vec<Expr> = Vec::new();
+
+    if !alpha.is_zero() {
+        parts.push(Expr::Mul(alpha.to_expr().boxed(), log_abs(q_expr.clone()).boxed()));
+    }
+
+    if !beta.is_zero() {
+        let four = QuadExt::from_rational(Rational::from_integer(4.into()), d);
+        let delta = four * a.clone() * c - b.clone() * b.clone();
+        let sqrt_delta = Expr::Pow(
+            delta.to_expr().boxed(),
+            Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+        );
+        let leading = Expr::Div(
+            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+            sqrt_delta.clone().boxed(),
+        );
+        let deriv_expr = Expr::Add(
+            Expr::Mul((two * a).to_expr().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+            b.to_expr().boxed(),
+        );
+        let atan_arg = Expr::Div(deriv_expr.boxed(), sqrt_delta.boxed());
+        let atan_expr = Expr::Atan(atan_arg.boxed());
+        parts.push(Expr::Mul(
+            beta.to_expr().boxed(),
+            Expr::Mul(leading.boxed(), atan_expr.boxed()).boxed(),
+        ));
+    }
+
+    Some(simplify(sum_exprs(parts)))
 }

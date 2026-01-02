@@ -14,6 +14,8 @@ use crate::core::polynomial::Polynomial;
 use crate::simplify::{normalize, simplify, simplify_fully, substitute};
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
+use std::cell::RefCell;
+use std::thread_local;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub(crate) use common::{coeff_of_var, linear_parts};
@@ -26,7 +28,17 @@ pub use trig::is_trig;
 const TRANSFORM_SIZE_LIMIT: usize = 96;
 const TABULAR_STEP_LIMIT: usize = 8;
 const IBP_RECURSION_LIMIT: usize = 12;
+const SUBSTITUTION_CANDIDATE_LIMIT: usize = 64;
 type ExprPoly = Polynomial<Expr>;
+
+thread_local! {
+    static NON_ELEM_CACHE: RefCell<HashMap<(Expr, String), Option<NonElementaryKind>>> =
+        RefCell::new(HashMap::new());
+    static POLY_CACHE: RefCell<HashMap<(Expr, String), Option<usize>>> =
+        RefCell::new(HashMap::new());
+    static IS_POLY_CACHE: RefCell<HashMap<(Expr, String), bool>> =
+        RefCell::new(HashMap::new());
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntegrandKind {
@@ -122,6 +134,41 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             },
         };
     }
+    if exponential::is_exp_poly_product(expr, var) {
+        if let Some(result) = exponential::integrate(expr, var) {
+            let kind = IntegrandKind::Product(
+                Box::new(IntegrandKind::Polynomial),
+                Box::new(IntegrandKind::Exponential),
+            );
+            let mut attempts = vec![
+                IntegrationAttempt {
+                    strategy: Strategy::Direct,
+                    status: AttemptStatus::Succeeded,
+                    note: None,
+                },
+                IntegrationAttempt {
+                    strategy: Strategy::Risch,
+                    status: AttemptStatus::Succeeded,
+                    note: Some("exp-poly reduction".to_string()),
+                },
+            ];
+            if let Some((_, note)) = integration_by_parts_tabular(expr, var) {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::IntegrationByParts,
+                    status: AttemptStatus::Succeeded,
+                    note: Some(note),
+                });
+            }
+            return IntegrationResult::Integrated {
+                result: simplify(result),
+                report: IntegrandReport {
+                    kind,
+                    reason: None,
+                    attempts,
+                },
+            };
+        }
+    }
     let original_expr = expr.clone();
     let normalized = normalize(expr.clone());
     let mut attempts = Vec::new();
@@ -175,6 +222,13 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             status: AttemptStatus::Succeeded,
             note: None,
         });
+        if exponential::is_exp_poly_product(expr, var) {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::Risch,
+                status: AttemptStatus::Succeeded,
+                note: Some("exp-poly reduction".to_string()),
+            });
+        }
         return IntegrationResult::Integrated {
             result: simplify(result),
             report: IntegrandReport {
@@ -215,6 +269,7 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                 risch_outcome = retry;
             }
         }
+        let mut skip_risch = false;
         match risch_outcome {
             risch_lite::RischLiteOutcome::Integrated { result, note } => {
                 attempts.push(IntegrationAttempt {
@@ -237,6 +292,7 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                     status: AttemptStatus::Failed(ReasonCode::NonElementary(kind)),
                     note: Some(note),
                 });
+                skip_risch = true;
             }
             risch_lite::RischLiteOutcome::Indeterminate { note } => {
                 attempts.push(IntegrationAttempt {
@@ -246,37 +302,45 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                 });
             }
         }
-        let risch_outcome = risch::analyze(expr, var);
-        match risch_outcome {
-            risch::RischOutcome::Integrated { result, note } => {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::Risch,
-                    status: AttemptStatus::Succeeded,
-                    note: Some(note),
-                });
-                return IntegrationResult::Integrated {
-                    result: simplify(result),
-                    report: IntegrandReport {
-                        kind,
-                        reason: None,
-                        attempts,
-                    },
-                };
+        if !skip_risch {
+            let risch_outcome = risch::analyze(expr, var);
+            match risch_outcome {
+                risch::RischOutcome::Integrated { result, note } => {
+                    attempts.push(IntegrationAttempt {
+                        strategy: Strategy::Risch,
+                        status: AttemptStatus::Succeeded,
+                        note: Some(note),
+                    });
+                    return IntegrationResult::Integrated {
+                        result: simplify(result),
+                        report: IntegrandReport {
+                            kind,
+                            reason: None,
+                            attempts,
+                        },
+                    };
+                }
+                risch::RischOutcome::NonElementary { kind: ne_kind, note } => {
+                    attempts.push(IntegrationAttempt {
+                        strategy: Strategy::Risch,
+                        status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind)),
+                        note: Some(note),
+                    });
+                }
+                risch::RischOutcome::Indeterminate { note } => {
+                    attempts.push(IntegrationAttempt {
+                        strategy: Strategy::Risch,
+                        status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
+                        note: Some(note),
+                    });
+                }
             }
-            risch::RischOutcome::NonElementary { kind: ne_kind, note } => {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::Risch,
-                    status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind)),
-                    note: Some(note),
-                });
-            }
-            risch::RischOutcome::Indeterminate { note } => {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::Risch,
-                    status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
-                    note: Some(note),
-                });
-            }
+        } else {
+            attempts.push(IntegrationAttempt {
+                strategy: Strategy::Risch,
+                status: AttemptStatus::Failed(ReasonCode::NonElementary(non_elem.clone())),
+                note: Some("skipped (risch-lite determinate)".to_string()),
+            });
         }
         attempts.push(IntegrationAttempt {
             strategy: Strategy::MeijerG,
@@ -323,8 +387,31 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                 status: AttemptStatus::Succeeded,
                 note: None,
             });
+            let mut final_result = result;
+            if let Some((_, note)) = integration_by_parts_tabular(expr, var) {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::IntegrationByParts,
+                    status: AttemptStatus::Succeeded,
+                    note: Some(note),
+                });
+            }
+            let mut risch_outcome = risch_lite::analyze(expr, var);
+            if matches!(risch_outcome, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
+                let retry = risch_lite::analyze(&original_expr, var);
+                if !matches!(retry, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
+                    risch_outcome = retry;
+                }
+            }
+            if let risch_lite::RischLiteOutcome::Integrated { result, note } = risch_outcome {
+                attempts.push(IntegrationAttempt {
+                    strategy: Strategy::RischLite,
+                    status: AttemptStatus::Succeeded,
+                    note: Some(note),
+                });
+                final_result = result;
+            }
             return IntegrationResult::Integrated {
-                result: simplify(result),
+                result: simplify(final_result),
                 report: IntegrandReport {
                     kind,
                     reason: None,
@@ -874,6 +961,9 @@ fn integrate_function_of_inner(expr: &Expr, var: &str) -> Option<Expr> {
         return None;
     }
     candidates.sort_by(|a, b| expr_size(b).cmp(&expr_size(a)));
+    if candidates.len() > SUBSTITUTION_CANDIDATE_LIMIT {
+        candidates.truncate(SUBSTITUTION_CANDIDATE_LIMIT);
+    }
     let u_name = fresh_var_name(expr, var, "u");
     let u_var = Expr::Variable(u_name.clone());
 
@@ -1005,6 +1095,7 @@ fn factor_cancel_ratio(expr: &Expr, target: &Expr, var: &str) -> Option<Expr> {
         }
         if let Some((idx, coeff)) = matched {
             expr_factors.remove(idx);
+            expr_norms.remove(idx);
             ratio_factors.push(coeff);
         } else {
             return None;
@@ -1775,7 +1866,8 @@ fn integration_by_parts(expr: &Expr, var: &str) -> Option<(Expr, String)> {
         return Some(result);
     }
     let mut memo = HashMap::new();
-    integrate_by_parts_recursive(expr, var, &mut memo, 0)
+    let mut best_size = usize::MAX;
+    integrate_by_parts_recursive(expr, var, &mut memo, 0, &mut best_size)
 }
 
 fn integrate_by_parts_recursive(
@@ -1783,6 +1875,7 @@ fn integrate_by_parts_recursive(
     var: &str,
     memo: &mut HashMap<Expr, Option<Expr>>,
     depth: usize,
+    best_size: &mut usize,
 ) -> Option<(Expr, String)> {
     if depth >= IBP_RECURSION_LIMIT {
         return None;
@@ -1805,7 +1898,9 @@ fn integrate_by_parts_recursive(
     if !is_one_expr(&const_expr) {
         memo.insert(expr.clone(), None);
         let rest_expr = rebuild_product(Rational::one(), factors.clone());
-        if let Some((res, note)) = integrate_by_parts_recursive(&rest_expr, var, memo, depth + 1) {
+        if let Some((res, note)) =
+            integrate_by_parts_recursive(&rest_expr, var, memo, depth + 1, best_size)
+        {
             let scaled = simplify(Expr::Mul(const_expr.boxed(), res.boxed()));
             memo.insert(expr.clone(), Some(scaled.clone()));
             return Some((scaled, note));
@@ -1825,6 +1920,10 @@ fn integrate_by_parts_recursive(
     }
     memo.insert(expr.clone(), None);
     let expr_size_current = expr_size(expr);
+    if expr_size_current >= *best_size {
+        return None;
+    }
+    *best_size = expr_size_current.min(*best_size);
 
     let mut candidates: Vec<(usize, LiateRank)> = factors
         .iter()
@@ -1875,8 +1974,8 @@ fn integrate_by_parts_recursive(
             if candidate_size > TRANSFORM_SIZE_LIMIT || candidate_size > expr_size_current + 8 {
                 continue;
             }
-            if let Some(res) =
-                integrate_by_parts_recursive(&candidate, var, memo, depth + 1).map(|r| r.0)
+            if let Some(res) = integrate_by_parts_recursive(&candidate, var, memo, depth + 1, best_size)
+                .map(|r| r.0)
             {
                 integral_vdu = Some(res);
                 break;
@@ -2073,9 +2172,36 @@ pub(crate) fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElement
     if is_constant_wrt(expr, var) {
         return None;
     }
+    let key = (expr.clone(), var.to_string());
+    if let Some(cached) = NON_ELEM_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
+    let result = detect_non_elementary_uncached(expr, var);
+    NON_ELEM_CACHE.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() > 1024 {
+            map.clear();
+        }
+        map.insert(key, result.clone());
+    });
+    result
+}
+
+fn detect_non_elementary_uncached(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
+    if is_constant_wrt(expr, var) {
+        return None;
+    }
+
+    if exponential::is_exp_poly_product(expr, var) {
+        return None;
+    }
 
     if integrate_by_substitution(expr, var).is_some() {
         return None;
+    }
+
+    if let Some(kind) = fast_non_elementary(expr, var) {
+        return Some(kind);
     }
 
     match expr {
@@ -2085,6 +2211,12 @@ pub(crate) fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElement
                 return Some(kind);
             }
             for factor in &var_factors {
+                if is_radical_pow(factor) {
+                    if is_special_function_radical(factor, &var_factors, var) {
+                        return Some(NonElementaryKind::SpecialFunctionNeeded);
+                    }
+                    continue;
+                }
                 if let Some(kind) = detect_non_elementary_core(factor, var) {
                     return Some(kind);
                 }
@@ -2094,6 +2226,75 @@ pub(crate) fn detect_non_elementary(expr: &Expr, var: &str) -> Option<NonElement
     }
 
     detect_non_elementary_core(expr, var)
+}
+
+fn fast_non_elementary(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
+    match expr {
+        Expr::Exp(arg) => {
+            if let Some(deg) = polynomial_degree(arg, var) {
+                if deg > 1 {
+                    return Some(NonElementaryKind::ExpOfPolynomial);
+                }
+            }
+        }
+        Expr::Pow(base, exp) => {
+            if is_pow_self(base, exp, var) {
+                return Some(NonElementaryKind::PowerSelf);
+            }
+        }
+        Expr::Div(num, den) => {
+            if let Some(kind) = trig_over_argument_kind(num, den, var) {
+                return Some(kind);
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+fn is_special_function_radical(factor: &Expr, factors: &[Expr], var: &str) -> bool {
+    let Expr::Pow(base, exp) = factor else {
+        return false;
+    };
+    let exponent = match &**exp {
+        Expr::Constant(k) => k.clone(),
+        Expr::Neg(inner) => match &**inner {
+            Expr::Constant(k) => -k.clone(),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    if exponent.is_integer() {
+        return false;
+    }
+    let deg = match polynomial_degree(base, var) {
+        Some(deg) if deg >= 2 => deg,
+        _ => return false,
+    };
+    if deg <= 2 {
+        return false;
+    }
+    if exponent.denom() == &BigInt::from(2) && deg > 2 {
+        let has_odd_poly = factors.iter().any(|f| {
+            if f == factor {
+                return false;
+            }
+            polynomial_degree(f, var).map_or(false, |d| d % 2 == 1)
+        });
+        return !has_odd_poly;
+    }
+    true
+}
+
+fn is_radical_pow(factor: &Expr) -> bool {
+    let Expr::Pow(_, exp) = factor else {
+        return false;
+    };
+    match &**exp {
+        Expr::Constant(k) => !k.is_integer(),
+        Expr::Neg(inner) => matches!(&**inner, Expr::Constant(k) if !k.is_integer()),
+        _ => false,
+    }
 }
 
 fn detect_non_elementary_core(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
@@ -2198,16 +2399,44 @@ fn is_log_var(expr: &Expr, var: &str) -> bool {
 }
 
 fn polynomial_degree(expr: &Expr, var: &str) -> Option<usize> {
-    polynomial::degree(expr, var)
+    let key = (expr.clone(), var.to_string());
+    if let Some(cached) = POLY_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
+    let result = polynomial::degree(expr, var);
+    POLY_CACHE.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() > 2048 {
+            map.clear();
+        }
+        map.insert(key, result);
+    });
+    result
 }
 
 fn is_rational_like(expr: &Expr, var: &str) -> bool {
     match expr {
         Expr::Div(num, den) => {
-            polynomial::is_polynomial(num, var) && polynomial::is_polynomial(den, var)
+            is_polynomial_cached(num, var) && is_polynomial_cached(den, var)
         }
         _ => false,
     }
+}
+
+fn is_polynomial_cached(expr: &Expr, var: &str) -> bool {
+    let key = (expr.clone(), var.to_string());
+    if let Some(cached) = IS_POLY_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return cached;
+    }
+    let result = polynomial::is_polynomial(expr, var);
+    IS_POLY_CACHE.with(|c| {
+        let mut map = c.borrow_mut();
+        if map.len() > 2048 {
+            map.clear();
+        }
+        map.insert(key, result);
+    });
+    result
 }
 
 fn expr_size(expr: &Expr) -> usize {
