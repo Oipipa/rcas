@@ -9,7 +9,8 @@ use super::polynomial;
 use super::rational;
 use super::trig;
 use super::types::{IntegrandKind, NonElementaryKind};
-use super::{constant_ratio, integrate_by_substitution, is_constant_wrt, split_constant_factors};
+use super::{constant_ratio, is_constant_wrt, split_constant_factors};
+use super::substitution::integrate_by_substitution;
 
 pub(super) fn classify_integrand(expr: &Expr, var: &str) -> IntegrandKind {
     if let Some(non_elem) = detect_non_elementary(expr, var) {
