@@ -202,19 +202,149 @@ fn count_sum_terms(expr: &Expr) -> usize {
     }
 }
 
-fn split_coeff(expr: &Expr) -> (Rational, Expr) {
+fn is_zero_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Constant(r) if r.is_zero())
+}
+
+fn is_one_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Constant(r) if r.is_one())
+}
+
+fn is_neg_one_expr(expr: &Expr) -> bool {
     match expr {
-        Expr::Constant(c) => (c.clone(), one()),
+        Expr::Constant(r) => *r == -Rational::one(),
+        Expr::Neg(inner) => is_one_expr(inner),
+        _ => false,
+    }
+}
+
+fn is_const_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Variable(_) => false,
+        Expr::Constant(_) => true,
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b)
+        | Expr::Pow(a, b) => is_const_expr(a) && is_const_expr(b),
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Exp(inner)
+        | Expr::Log(inner)
+        | Expr::Abs(inner) => is_const_expr(inner),
+    }
+}
+
+fn coeff_add(a: Expr, b: Expr) -> Expr {
+    if is_zero_expr(&a) {
+        return b;
+    }
+    if is_zero_expr(&b) {
+        return a;
+    }
+    match (&a, &b) {
+        (Expr::Constant(ca), Expr::Constant(cb)) => Expr::Constant(ca + cb),
+        _ if a == b => Expr::Mul(
+            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+            a.boxed(),
+        ),
+        _ => Expr::Add(a.boxed(), b.boxed()),
+    }
+}
+
+fn coeff_mul(a: Expr, b: Expr) -> Expr {
+    if is_zero_expr(&a) || is_zero_expr(&b) {
+        return zero();
+    }
+    if is_one_expr(&a) {
+        return b;
+    }
+    if is_one_expr(&b) {
+        return a;
+    }
+    if is_neg_one_expr(&a) {
+        return simplify_neg(b);
+    }
+    if is_neg_one_expr(&b) {
+        return simplify_neg(a);
+    }
+    match (&a, &b) {
+        (Expr::Constant(_), Expr::Div(num, den))
+            if is_const_expr(num) && is_const_expr(den) =>
+        {
+            let new_num = coeff_mul(a.clone(), (**num).clone());
+            return coeff_div(new_num, (**den).clone());
+        }
+        (Expr::Div(num, den), Expr::Constant(_))
+            if is_const_expr(num) && is_const_expr(den) =>
+        {
+            let new_num = coeff_mul((**num).clone(), b.clone());
+            return coeff_div(new_num, (**den).clone());
+        }
+        (Expr::Constant(ca), Expr::Constant(cb)) => Expr::Constant(ca * cb),
+        _ => Expr::Mul(a.boxed(), b.boxed()),
+    }
+}
+
+fn coeff_div(a: Expr, b: Expr) -> Expr {
+    if is_zero_expr(&a) {
+        return zero();
+    }
+    if is_one_expr(&b) {
+        return a;
+    }
+    if a == b {
+        return one();
+    }
+    match (&a, &b) {
+        (Expr::Constant(ca), Expr::Constant(cb)) => {
+            if cb.is_zero() {
+                Expr::Div(a.boxed(), b.boxed())
+            } else {
+                Expr::Constant(ca / cb)
+            }
+        }
+        (Expr::Constant(ca), _) if ca.is_negative() => {
+            let pos = Expr::Constant(-ca.clone());
+            simplify_neg(coeff_div(pos, b.clone()))
+        }
+        (Expr::Neg(inner), _) => simplify_neg(coeff_div((**inner).clone(), b.clone())),
+        _ if is_neg_one_expr(&b) => simplify_neg(a),
+        _ => Expr::Div(a.boxed(), b.boxed()),
+    }
+}
+
+fn split_coeff(expr: &Expr) -> (Expr, Expr) {
+    match expr {
+        Expr::Constant(_) => (expr.clone(), one()),
         Expr::Neg(e) => {
             let (c, b) = split_coeff(e);
-            (-c, b)
+            (simplify_neg(c), b)
         }
         Expr::Mul(a, b) => {
             let (ca, ba) = split_coeff(a);
             let (cb, bb) = split_coeff(b);
-            (ca * cb, mul_norm(ba, bb))
+            (coeff_mul(ca, cb), mul_norm(ba, bb))
         }
-        other => (Rational::one(), other.clone()),
+        other if is_const_expr(other) => (other.clone(), one()),
+        other => (one(), other.clone()),
     }
 }
 
@@ -254,19 +384,19 @@ fn factors(expr: &Expr) -> Vec<Expr> {
     }
 }
 
-fn collect_sum<I>(terms: I) -> HashMap<CanonKey, Rational>
+fn collect_sum<I>(terms: I) -> HashMap<CanonKey, Expr>
 where
     I: IntoIterator<Item = Expr>,
 {
     let mut map = HashMap::new();
     for term in terms {
         let (c, b) = split_coeff(&term);
-        if c.is_zero() {
+        if is_zero_expr(&c) {
             continue;
         }
         let factors = canonical_factors(&b);
         map.entry(CanonKey(factors))
-            .and_modify(|acc| *acc += &c)
+            .and_modify(|acc: &mut Expr| *acc = coeff_add(acc.clone(), c.clone()))
             .or_insert(c);
     }
     map
@@ -284,18 +414,18 @@ fn flatten_mul(expr: &Expr) -> Vec<Expr> {
     }
 }
 
-fn rebuild_sum(map: HashMap<CanonKey, Rational>) -> Expr {
+fn rebuild_sum(map: HashMap<CanonKey, Expr>) -> Expr {
     let mut map = map;
     let const_term = map
         .remove(&CanonKey(Vec::new()))
-        .unwrap_or_else(Rational::zero);
-    let mut items: Vec<(CanonKey, Rational)> = map.into_iter().collect();
+        .unwrap_or_else(zero);
+    let mut items: Vec<(CanonKey, Expr)> = map.into_iter().collect();
     items.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     let mut terms: Vec<Expr> = items
         .into_iter()
         .filter_map(|(CanonKey(factors), coef)| {
-            if coef.is_zero() {
+            if is_zero_expr(&coef) {
                 None
             } else {
                 Some(term_from(&coef, mul_from_sorted_factors(&factors)))
@@ -303,8 +433,8 @@ fn rebuild_sum(map: HashMap<CanonKey, Rational>) -> Expr {
         })
         .collect();
 
-    if !const_term.is_zero() {
-        terms.push(Expr::Constant(const_term));
+    if !is_zero_expr(&const_term) {
+        terms.push(const_term);
     }
 
     match terms.len() {
@@ -314,24 +444,24 @@ fn rebuild_sum(map: HashMap<CanonKey, Rational>) -> Expr {
     }
 }
 
-fn term_from(coef: &Rational, base: Expr) -> Expr {
-    if coef.is_zero() {
+fn term_from(coef: &Expr, base: Expr) -> Expr {
+    if is_zero_expr(coef) {
         return zero();
     }
 
     if is_one(&base) {
-        return Expr::Constant(coef.clone());
+        return coef.clone();
     }
 
-    if coef.is_one() {
+    if is_one_expr(coef) {
         return base;
     }
 
-    if coef == &-Rational::one() {
+    if is_neg_one_expr(coef) {
         return simplify_neg(base);
     }
 
-    Expr::Mul(Expr::Constant(coef.clone()).boxed(), base.boxed())
+    Expr::Mul(coef.clone().boxed(), base.boxed())
 }
 
 pub fn simplify_mul(x: Expr, y: Expr) -> Expr {
@@ -374,14 +504,14 @@ pub fn simplify_mul(x: Expr, y: Expr) -> Expr {
         (x, y) if is_one(&y) => x,
         (x, y) => {
             let (c, b) = split_coeff(&Expr::Mul(x.boxed(), y.boxed()));
-            if c.is_zero() {
+            if is_zero_expr(&c) {
                 zero()
             } else {
                 match b {
-                    t if is_one(&t) => Expr::Constant(c),
-                    _ if c.is_one() => b,
-                    _ if c == -Rational::one() => simplify_neg(b),
-                    _ => Expr::Mul(Expr::Constant(c).boxed(), b.boxed()),
+                    t if is_one(&t) => c,
+                    _ if is_one_expr(&c) => b,
+                    _ if is_neg_one_expr(&c) => simplify_neg(b),
+                    _ => Expr::Mul(c.boxed(), b.boxed()),
                 }
             }
         }
@@ -402,18 +532,26 @@ pub fn simplify_div(x: Expr, y: Expr) -> Expr {
         (x, y) => {
             let (cx, bx) = split_coeff(&x);
             let (cy, by) = split_coeff(&y);
-            let c = cx / cy;
+            if is_zero_expr(&cy) {
+                return Expr::Div(x.boxed(), y.boxed());
+            }
+            let c = coeff_div(cx, cy);
             if bx == by && !is_one(&bx) {
-                if c.is_one() { one() } else { Expr::Constant(c) }
+                if is_one_expr(&c) {
+                    one()
+                } else {
+                    c
+                }
             } else {
                 let core = if is_one(&by) {
                     bx
                 } else {
                     Expr::Div(bx.boxed(), by.boxed())
                 };
-                match c.cmp(&Rational::one()) {
-                    std::cmp::Ordering::Equal => core,
-                    _ => simplify_mul(Expr::Constant(c), core),
+                if is_one_expr(&c) {
+                    core
+                } else {
+                    simplify_mul(c, core)
                 }
             }
         }
@@ -425,6 +563,9 @@ pub fn simplify_pow(x: Expr, y: Expr) -> Expr {
         (_, Expr::Constant(e)) if e.is_zero() => one(),
         (base, Expr::Constant(e)) if e.is_one() => base,
         (Expr::Constant(b), Expr::Constant(e)) => {
+            if b.is_one() {
+                return one();
+            }
             if e.is_integer() {
                 let k: BigInt = e.to_integer();
                 if let Some(power) = k.abs().to_u32() {
@@ -465,6 +606,8 @@ pub fn simplify_neg(expr: Expr) -> Expr {
     match expr {
         Expr::Constant(x) => Expr::Constant(-x),
         Expr::Neg(x) => *x,
+        Expr::Add(a, b) => simplify_add(simplify_neg(*a), simplify_neg(*b)),
+        Expr::Sub(a, b) => simplify_sub(*b, *a),
         other => Expr::Neg(other.boxed()),
     }
 }
@@ -479,7 +622,7 @@ fn is_one(expr: &Expr) -> bool {
 
 #[derive(Clone)]
 struct TermMeta {
-    coeff: Rational,
+    coeff: Expr,
     sines: Vec<Expr>,
     coses: Vec<Expr>,
     others: Vec<Expr>,
@@ -513,6 +656,10 @@ fn term_meta(expr: &Expr) -> TermMeta {
         coses,
         others,
     }
+}
+
+fn coeff_is_neg_of(lhs: &Expr, rhs: &Expr) -> bool {
+    simplify_neg(rhs.clone()) == *lhs
 }
 
 fn combine_trig_pair(terms: &[Expr]) -> Option<(Expr, (usize, usize))> {
@@ -565,7 +712,7 @@ fn try_trig_pair(lhs: &TermMeta, rhs: &TermMeta) -> Option<Expr> {
         && lhs.coses.len() == 1
         && rhs.sines.len() == 1
         && rhs.coses.len() == 1
-        && lhs.coeff == -rhs.coeff.clone()
+        && coeff_is_neg_of(&lhs.coeff, &rhs.coeff)
         && lhs.coses[0] == rhs.coses[0]
     {
         let core = mul_from_sorted_factors(&lhs.others);
@@ -580,7 +727,7 @@ fn try_trig_pair(lhs: &TermMeta, rhs: &TermMeta) -> Option<Expr> {
         && lhs.coses.len() == 1
         && rhs.sines.len() == 1
         && rhs.coses.len() == 1
-        && lhs.coeff == -rhs.coeff.clone()
+        && coeff_is_neg_of(&lhs.coeff, &rhs.coeff)
         && lhs.sines[0] == rhs.sines[0]
         && lhs.coses[0] == rhs.coses[0]
     {
@@ -644,23 +791,24 @@ fn mk_mul_list(mut items: Vec<Expr>) -> Expr {
 }
 
 fn simplify_imaginary_quadratic(expr: Expr) -> Expr {
-    let (coeff, base) = split_coeff(&expr);
+    let (mut coeff, base) = split_coeff(&expr);
     let mut factors = factors(&base);
     let mut changed = false;
-    let mut coeff = coeff;
 
     if let Some((idx_sqrt, sqrt_base, d)) = find_sqrt_u2_plus_d(&factors) {
         if d.is_negative() {
-            if let Some(idx_pow) = factors.iter().position(is_neg_one_pow_neg_half) {
-                factors.swap_remove(idx_sqrt.max(idx_pow));
-                factors.swap_remove(idx_sqrt.min(idx_pow));
-                let neg_base = Expr::Neg(sqrt_base.boxed());
-                let new_sqrt = Expr::Pow(
-                    neg_base.boxed(),
-                    Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+            let sqrt_factor = factors[idx_sqrt].clone();
+            if take_neg_one_pow_neg_half(&mut coeff, &mut factors) {
+                if let Some(idx) = factors.iter().position(|f| *f == sqrt_factor) {
+                    factors.swap_remove(idx);
+                }
+                let neg_base = simplify_neg(sqrt_base);
+                let new_sqrt = simplify_pow(
+                    neg_base,
+                    Expr::Constant(Rational::new(1.into(), 2.into())),
                 );
                 factors.push(new_sqrt);
-                coeff = -coeff;
+                coeff = simplify_neg(coeff);
                 changed = true;
             }
         }
@@ -668,15 +816,18 @@ fn simplify_imaginary_quadratic(expr: Expr) -> Expr {
 
     if let Some((idx_log, u_expr, d)) = find_log_abs_u_plus_sqrt(&factors) {
         if d.is_negative() {
-            if let Some(idx_pow) = factors.iter().position(is_neg_one_pow_neg_half) {
-                factors.swap_remove(idx_log.max(idx_pow));
-                factors.swap_remove(idx_log.min(idx_pow));
-                let denom = Expr::Pow(
-                    Expr::Constant(-d.clone()).boxed(),
-                    Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+            let log_factor = factors[idx_log].clone();
+            if take_neg_one_pow_neg_half(&mut coeff, &mut factors) {
+                if let Some(idx) = factors.iter().position(|f| *f == log_factor) {
+                    factors.swap_remove(idx);
+                }
+                let denom = simplify_pow(
+                    Expr::Constant(-d.clone()),
+                    Expr::Constant(Rational::new(1.into(), 2.into())),
                 );
-                let acos_arg = Expr::Div(u_expr.boxed(), denom.boxed());
+                let acos_arg = simplify_div(u_expr, denom);
                 factors.push(Expr::Acos(acos_arg.boxed()));
+                coeff = simplify_neg(coeff);
                 changed = true;
             }
         }
@@ -688,6 +839,39 @@ fn simplify_imaginary_quadratic(expr: Expr) -> Expr {
 
     let core = mk_mul_list(factors);
     term_from(&coeff, core)
+}
+
+fn take_neg_one_pow_neg_half(coeff: &mut Expr, factors: &mut Vec<Expr>) -> bool {
+    if let Some(idx) = factors.iter().position(is_neg_one_pow_neg_half) {
+        factors.swap_remove(idx);
+        return true;
+    }
+    if let Some(new_coeff) = remove_factor_from_coeff(coeff, is_neg_one_pow_neg_half) {
+        *coeff = new_coeff;
+        return true;
+    }
+    false
+}
+
+fn remove_factor_from_coeff(expr: &Expr, pred: fn(&Expr) -> bool) -> Option<Expr> {
+    if pred(expr) {
+        return Some(one());
+    }
+    match expr {
+        Expr::Mul(a, b) => {
+            if let Some(new_a) = remove_factor_from_coeff(a, pred) {
+                return Some(coeff_mul(new_a, (**b).clone()));
+            }
+            if let Some(new_b) = remove_factor_from_coeff(b, pred) {
+                return Some(coeff_mul((**a).clone(), new_b));
+            }
+            None
+        }
+        Expr::Neg(inner) => {
+            remove_factor_from_coeff(inner, pred).map(|res| simplify_neg(res))
+        }
+        _ => None,
+    }
 }
 
 fn is_neg_one_pow_neg_half(expr: &Expr) -> bool {
@@ -721,24 +905,30 @@ fn find_log_abs_u_plus_sqrt(factors: &[Expr]) -> Option<(usize, Expr, Rational)>
         let Expr::Log(inner) = factor else { continue };
         let Expr::Abs(abs_inner) = &**inner else { continue };
         let terms = flatten_sum(abs_inner);
-        if terms.len() != 2 {
+        if terms.len() < 2 {
             continue;
         }
-        for (u_idx, u_term) in terms.iter().enumerate() {
-            let sqrt_term = terms.get(1 - u_idx)?;
+        for (sqrt_idx, sqrt_term) in terms.iter().enumerate() {
             let Expr::Pow(base, exp) = sqrt_term else { continue };
             let Expr::Constant(exp) = &**exp else { continue };
             if *exp != Rational::new(1.into(), 2.into()) {
                 continue;
             }
-            if let Some((u_expr, d)) = match_u2_plus_d(base) {
-                if &u_expr == u_term {
-                    return Some((idx, u_expr, d));
-                }
+            let Some((u_expr, d)) = match_u2_plus_d(base) else { continue };
+
+            let mut rest_terms = terms.clone();
+            rest_terms.swap_remove(sqrt_idx);
+            let u_candidate = rebuild_sum_from_terms(&rest_terms);
+            if simplify(u_candidate.clone()) == simplify(u_expr.clone()) {
+                return Some((idx, u_candidate, d));
             }
         }
     }
     None
+}
+
+fn rebuild_sum_from_terms(terms: &[Expr]) -> Expr {
+    rebuild_sum(collect_sum(terms.iter().cloned()))
 }
 
 fn match_u2_plus_d(expr: &Expr) -> Option<(Expr, Rational)> {
