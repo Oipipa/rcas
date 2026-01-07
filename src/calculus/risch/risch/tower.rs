@@ -5,6 +5,7 @@ use num_traits::ToPrimitive;
 
 use crate::calculus::integrate::contains_var;
 use crate::calculus::risch::diff_field::{ExtensionKind, FieldElement, Tower};
+use crate::calculus::risch::expr_utils::expr_any;
 use crate::core::expr::{Expr, Rational};
 
 use super::utils::extract_rational_const;
@@ -184,39 +185,7 @@ fn algebraic_degree_from_generator(expr: &Expr) -> Option<(Expr, usize)> {
 }
 
 fn contains_subexpr(expr: &Expr, target: &Expr) -> bool {
-    if expr == target {
-        return true;
-    }
-    match expr {
-        Expr::Add(a, b)
-        | Expr::Sub(a, b)
-        | Expr::Mul(a, b)
-        | Expr::Div(a, b)
-        | Expr::Pow(a, b) => contains_subexpr(a, target) || contains_subexpr(b, target),
-        Expr::Neg(inner)
-        | Expr::Sin(inner)
-        | Expr::Cos(inner)
-        | Expr::Tan(inner)
-        | Expr::Sec(inner)
-        | Expr::Csc(inner)
-        | Expr::Cot(inner)
-        | Expr::Atan(inner)
-        | Expr::Asin(inner)
-        | Expr::Acos(inner)
-        | Expr::Asec(inner)
-        | Expr::Acsc(inner)
-        | Expr::Acot(inner)
-        | Expr::Sinh(inner)
-        | Expr::Cosh(inner)
-        | Expr::Tanh(inner)
-        | Expr::Asinh(inner)
-        | Expr::Acosh(inner)
-        | Expr::Atanh(inner)
-        | Expr::Exp(inner)
-        | Expr::Log(inner)
-        | Expr::Abs(inner) => contains_subexpr(inner, target),
-        Expr::Variable(_) | Expr::Constant(_) => false,
-    }
+    expr_any(expr, &mut |node| node == target)
 }
 
 pub(super) fn tower_prefix(tower: &Tower, len: usize) -> Option<Tower> {
@@ -272,35 +241,5 @@ pub(super) fn is_constant_wrt_base(expr: &Expr, var: &str, symbols: &HashSet<Str
 }
 
 pub(super) fn contains_any_symbol(expr: &Expr, symbols: &HashSet<String>) -> bool {
-    match expr {
-        Expr::Variable(name) => symbols.contains(name),
-        Expr::Add(a, b)
-        | Expr::Sub(a, b)
-        | Expr::Mul(a, b)
-        | Expr::Div(a, b)
-        | Expr::Pow(a, b) => contains_any_symbol(a, symbols) || contains_any_symbol(b, symbols),
-        Expr::Neg(inner)
-        | Expr::Sin(inner)
-        | Expr::Cos(inner)
-        | Expr::Tan(inner)
-        | Expr::Sec(inner)
-        | Expr::Csc(inner)
-        | Expr::Cot(inner)
-        | Expr::Atan(inner)
-        | Expr::Asin(inner)
-        | Expr::Acos(inner)
-        | Expr::Asec(inner)
-        | Expr::Acsc(inner)
-        | Expr::Acot(inner)
-        | Expr::Sinh(inner)
-        | Expr::Cosh(inner)
-        | Expr::Tanh(inner)
-        | Expr::Asinh(inner)
-        | Expr::Acosh(inner)
-        | Expr::Atanh(inner)
-        | Expr::Exp(inner)
-        | Expr::Log(inner)
-        | Expr::Abs(inner) => contains_any_symbol(inner, symbols),
-        Expr::Constant(_) => false,
-    }
+    expr_any(expr, &mut |node| matches!(node, Expr::Variable(name) if symbols.contains(name)))
 }

@@ -2,75 +2,18 @@ use std::collections::HashSet;
 
 use num_traits::{One, ToPrimitive};
 
+use crate::calculus::risch::expr_utils::expr_any;
 use crate::core::error::{CasError, Result};
 use crate::core::expr::{Expr, Rational};
 
 pub(super) fn expr_contains_var(expr: &Expr, var: &str) -> bool {
-    match expr {
-        Expr::Variable(name) => name == var,
-        Expr::Add(a, b)
-        | Expr::Sub(a, b)
-        | Expr::Mul(a, b)
-        | Expr::Div(a, b)
-        | Expr::Pow(a, b) => expr_contains_var(a, var) || expr_contains_var(b, var),
-        Expr::Neg(inner)
-        | Expr::Sin(inner)
-        | Expr::Cos(inner)
-        | Expr::Tan(inner)
-        | Expr::Sec(inner)
-        | Expr::Csc(inner)
-        | Expr::Cot(inner)
-        | Expr::Atan(inner)
-        | Expr::Asin(inner)
-        | Expr::Acos(inner)
-        | Expr::Asec(inner)
-        | Expr::Acsc(inner)
-        | Expr::Acot(inner)
-        | Expr::Sinh(inner)
-        | Expr::Cosh(inner)
-        | Expr::Tanh(inner)
-        | Expr::Asinh(inner)
-        | Expr::Acosh(inner)
-        | Expr::Atanh(inner)
-        | Expr::Abs(inner)
-        | Expr::Exp(inner)
-        | Expr::Log(inner) => expr_contains_var(inner, var),
-        Expr::Constant(_) => false,
-    }
+    expr_any(expr, &mut |node| matches!(node, Expr::Variable(name) if name == var))
 }
 
 pub(super) fn expr_depends_on(expr: &Expr, base_var: &str, symbols: &HashSet<String>) -> bool {
-    match expr {
-        Expr::Variable(name) => name == base_var || symbols.contains(name),
-        Expr::Constant(_) => false,
-        Expr::Add(a, b)
-        | Expr::Sub(a, b)
-        | Expr::Mul(a, b)
-        | Expr::Div(a, b)
-        | Expr::Pow(a, b) => expr_depends_on(a, base_var, symbols) || expr_depends_on(b, base_var, symbols),
-        Expr::Neg(inner)
-        | Expr::Sin(inner)
-        | Expr::Cos(inner)
-        | Expr::Tan(inner)
-        | Expr::Sec(inner)
-        | Expr::Csc(inner)
-        | Expr::Cot(inner)
-        | Expr::Atan(inner)
-        | Expr::Asin(inner)
-        | Expr::Acos(inner)
-        | Expr::Asec(inner)
-        | Expr::Acsc(inner)
-        | Expr::Acot(inner)
-        | Expr::Sinh(inner)
-        | Expr::Cosh(inner)
-        | Expr::Tanh(inner)
-        | Expr::Asinh(inner)
-        | Expr::Acosh(inner)
-        | Expr::Atanh(inner)
-        | Expr::Abs(inner)
-        | Expr::Exp(inner)
-        | Expr::Log(inner) => expr_depends_on(inner, base_var, symbols),
-    }
+    expr_any(expr, &mut |node| {
+        matches!(node, Expr::Variable(name) if name == base_var || symbols.contains(name))
+    })
 }
 
 pub(super) fn expr_in_field(expr: &Expr, base_var: &str, symbols: &HashSet<String>) -> bool {
