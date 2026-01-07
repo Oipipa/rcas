@@ -6,20 +6,29 @@ mod exponential;
 mod limits;
 mod logarithmic;
 mod parts;
+mod partial_fractions;
 pub(crate) mod polynomial;
 pub(crate) mod rational;
+mod report;
+mod risch_bridge;
 mod substitution;
 mod trig;
 mod types;
 mod utils;
 
-use crate::calculus::risch::{risch, risch_lite};
+use crate::calculus::risch::risch_lite;
 use crate::core::expr::Expr;
-use crate::simplify::{normalize, simplify, simplify_fully};
+use crate::simplify::{normalize, simplify};
 use classify::{classify_integrand, is_rational_like};
 use limits::TRANSFORM_SIZE_LIMIT;
 use parts::{integration_by_parts, integration_by_parts_tabular};
-use substitution::integrate_by_substitution;
+use partial_fractions::integrate_partial_fractions;
+use report::{
+    attempt, default_reason, finish_with_risch_attempts, handle_non_elementary_early_exit,
+    push_attempt, push_failed, push_hit_limit, push_not_applicable, push_succeeded,
+};
+use risch_bridge::analyze_lite_with_retry;
+use substitution::{integrate_by_substitution, substitution_candidates};
 
 pub(crate) use common::{coeff_of_var, linear_parts};
 pub use exponential::is_exp;
@@ -53,11 +62,11 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             report: IntegrandReport {
                 kind,
                 reason: None,
-                attempts: vec![IntegrationAttempt {
-                    strategy: Strategy::Direct,
-                    status: AttemptStatus::Succeeded,
-                    note: None,
-                }],
+                attempts: vec![attempt(
+                    Strategy::Direct,
+                    AttemptStatus::Succeeded,
+                    None,
+                )],
             },
         };
     }
@@ -68,23 +77,19 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                 Box::new(IntegrandKind::Exponential),
             );
             let mut attempts = vec![
-                IntegrationAttempt {
-                    strategy: Strategy::Direct,
-                    status: AttemptStatus::Succeeded,
-                    note: None,
-                },
-                IntegrationAttempt {
-                    strategy: Strategy::Risch,
-                    status: AttemptStatus::Succeeded,
-                    note: Some("exp-poly reduction".to_string()),
-                },
+                attempt(Strategy::Direct, AttemptStatus::Succeeded, None),
+                attempt(
+                    Strategy::Risch,
+                    AttemptStatus::Succeeded,
+                    Some("exp-poly reduction".to_string()),
+                ),
             ];
             if let Some((_, note)) = integration_by_parts_tabular(expr, var) {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::IntegrationByParts,
-                    status: AttemptStatus::Succeeded,
-                    note: Some(note),
-                });
+                push_succeeded(
+                    &mut attempts,
+                    Strategy::IntegrationByParts,
+                    Some(note),
+                );
             }
             return IntegrationResult::Integrated {
                 result: simplify(result),
@@ -144,17 +149,13 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     }
 
     if let Some(result) = integrate_direct(expr, var) {
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::Direct,
-            status: AttemptStatus::Succeeded,
-            note: None,
-        });
+        push_succeeded(&mut attempts, Strategy::Direct, None);
         if exponential::is_exp_poly_product(expr, var) {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::Risch,
-                status: AttemptStatus::Succeeded,
-                note: Some("exp-poly reduction".to_string()),
-            });
+            push_succeeded(
+                &mut attempts,
+                Strategy::Risch,
+                Some("exp-poly reduction".to_string()),
+            );
         }
         return IntegrationResult::Integrated {
             result: simplify(result),
@@ -166,142 +167,39 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         };
     }
 
-    attempts.push(IntegrationAttempt {
-        strategy: Strategy::Direct,
-        status: AttemptStatus::Failed(default_reason(&kind)),
-        note: None,
-    });
+    push_failed(
+        &mut attempts,
+        Strategy::Direct,
+        default_reason(&kind),
+        None,
+    );
 
     if let Some(non_elem) = non_elem.clone() {
-        let reason = ReasonCode::NonElementary(non_elem.clone());
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::Substitution,
-            status: AttemptStatus::Failed(reason.clone()),
-            note: None,
-        });
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::IntegrationByParts,
-            status: AttemptStatus::Failed(reason.clone()),
-            note: None,
-        });
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::PartialFractions,
-            status: AttemptStatus::Failed(reason.clone()),
-            note: None,
-        });
-        let mut risch_outcome = risch_lite::analyze(expr, var);
-        if matches!(risch_outcome, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
-            let retry = risch_lite::analyze(&original_expr, var);
-            if !matches!(retry, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
-                risch_outcome = retry;
-            }
-        }
-        let mut skip_risch = false;
-        match risch_outcome {
-            risch_lite::RischLiteOutcome::Integrated { result, note } => {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::RischLite,
-                    status: AttemptStatus::Succeeded,
-                    note: Some(note),
-                });
-                return IntegrationResult::Integrated {
-                    result: simplify(result),
-                    report: IntegrandReport {
-                        kind,
-                        reason: None,
-                        attempts,
-                    },
-                };
-            }
-            risch_lite::RischLiteOutcome::NonElementary { kind, note } => {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::RischLite,
-                    status: AttemptStatus::Failed(ReasonCode::NonElementary(kind)),
-                    note: Some(note),
-                });
-                skip_risch = true;
-            }
-            risch_lite::RischLiteOutcome::Indeterminate { note } => {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::RischLite,
-                    status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
-                    note: Some(note),
-                });
-            }
-        }
-        if !skip_risch {
-            let risch_outcome = risch::analyze(expr, var);
-            match risch_outcome {
-                risch::RischOutcome::Integrated { result, note } => {
-                    attempts.push(IntegrationAttempt {
-                        strategy: Strategy::Risch,
-                        status: AttemptStatus::Succeeded,
-                        note: Some(note),
-                    });
-                    return IntegrationResult::Integrated {
-                        result: simplify(result),
-                        report: IntegrandReport {
-                            kind,
-                            reason: None,
-                            attempts,
-                        },
-                    };
-                }
-                risch::RischOutcome::NonElementary { kind: ne_kind, note } => {
-                    attempts.push(IntegrationAttempt {
-                        strategy: Strategy::Risch,
-                        status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind)),
-                        note: Some(note),
-                    });
-                }
-                risch::RischOutcome::Indeterminate { note } => {
-                    attempts.push(IntegrationAttempt {
-                        strategy: Strategy::Risch,
-                        status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
-                        note: Some(note),
-                    });
-                }
-            }
-        } else {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::Risch,
-                status: AttemptStatus::Failed(ReasonCode::NonElementary(non_elem.clone())),
-                note: Some("skipped (risch-lite determinate)".to_string()),
-            });
-        }
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::MeijerG,
-            status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("meijer-g expansion")),
-            note: None,
-        });
-        return IntegrationResult::NotIntegrable(IntegrandReport {
-            kind: IntegrandKind::NonElementary(non_elem),
-            reason: Some(reason),
+        return handle_non_elementary_early_exit(
             attempts,
-        });
+            expr,
+            &original_expr,
+            var,
+            non_elem,
+        );
     }
 
     let size = expr_size(expr);
-    let simplified_for_sub = simplify_fully(expr.clone());
+    let (simplified_for_sub, sub_candidates) =
+        substitution_candidates(expr, &original_expr);
     let sub_size = expr_size(&simplified_for_sub);
 
     // Substitution heuristics (u-sub, f'/f).
     if sub_size > TRANSFORM_SIZE_LIMIT {
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::Substitution,
-            status: AttemptStatus::HitLimit {
-                size: sub_size,
-                limit: TRANSFORM_SIZE_LIMIT,
-            },
-            note: None,
-        });
+        push_hit_limit(
+            &mut attempts,
+            Strategy::Substitution,
+            sub_size,
+            TRANSFORM_SIZE_LIMIT,
+        );
     } else {
         let mut sub_result = None;
-        let mut sub_candidates: Vec<&Expr> = vec![&simplified_for_sub, expr];
-        if &original_expr != expr && &original_expr != &simplified_for_sub {
-            sub_candidates.push(&original_expr);
-        }
-        for candidate in sub_candidates {
+        for candidate in &sub_candidates {
             if let Some(result) = integrate_by_substitution(candidate, var) {
                 sub_result = Some(result);
                 break;
@@ -309,32 +207,18 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         }
 
         if let Some(result) = sub_result {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::Substitution,
-                status: AttemptStatus::Succeeded,
-                note: None,
-            });
+            push_succeeded(&mut attempts, Strategy::Substitution, None);
             let mut final_result = result;
             if let Some((_, note)) = integration_by_parts_tabular(expr, var) {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::IntegrationByParts,
-                    status: AttemptStatus::Succeeded,
-                    note: Some(note),
-                });
+                push_succeeded(
+                    &mut attempts,
+                    Strategy::IntegrationByParts,
+                    Some(note),
+                );
             }
-            let mut risch_outcome = risch_lite::analyze(expr, var);
-            if matches!(risch_outcome, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
-                let retry = risch_lite::analyze(&original_expr, var);
-                if !matches!(retry, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
-                    risch_outcome = retry;
-                }
-            }
+            let risch_outcome = analyze_lite_with_retry(expr, &original_expr, var);
             if let risch_lite::RischLiteOutcome::Integrated { result, note } = risch_outcome {
-                attempts.push(IntegrationAttempt {
-                    strategy: Strategy::RischLite,
-                    status: AttemptStatus::Succeeded,
-                    note: Some(note),
-                });
+                push_succeeded(&mut attempts, Strategy::RischLite, Some(note));
                 final_result = result;
             }
             return IntegrationResult::Integrated {
@@ -346,30 +230,20 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                 },
             };
         } else {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::Substitution,
-                status: AttemptStatus::NotApplicable,
-                note: None,
-            });
+            push_not_applicable(&mut attempts, Strategy::Substitution);
         }
     }
 
     // Integration by parts for polynomial * trig/exp/log forms.
     if size > TRANSFORM_SIZE_LIMIT {
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::IntegrationByParts,
-            status: AttemptStatus::HitLimit {
-                size,
-                limit: TRANSFORM_SIZE_LIMIT,
-            },
-            note: None,
-        });
+        push_hit_limit(
+            &mut attempts,
+            Strategy::IntegrationByParts,
+            size,
+            TRANSFORM_SIZE_LIMIT,
+        );
     } else if let Some((result, note)) = integration_by_parts(expr, var) {
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::IntegrationByParts,
-            status: AttemptStatus::Succeeded,
-            note: Some(note),
-        });
+        push_succeeded(&mut attempts, Strategy::IntegrationByParts, Some(note));
         return IntegrationResult::Integrated {
             result: simplify(result),
             report: IntegrandReport {
@@ -379,29 +253,19 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
             },
         };
     } else {
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::IntegrationByParts,
-            status: AttemptStatus::NotApplicable,
-            note: None,
-        });
+        push_not_applicable(&mut attempts, Strategy::IntegrationByParts);
     }
 
     // Partial fractions (only if rational).
     if size > TRANSFORM_SIZE_LIMIT {
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::PartialFractions,
-            status: AttemptStatus::HitLimit {
-                size,
-                limit: TRANSFORM_SIZE_LIMIT,
-            },
-            note: None,
-        });
+        push_hit_limit(
+            &mut attempts,
+            Strategy::PartialFractions,
+            size,
+            TRANSFORM_SIZE_LIMIT,
+        );
     } else if let Some(result) = integrate_partial_fractions(expr, var) {
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::PartialFractions,
-            status: AttemptStatus::Succeeded,
-            note: None,
-        });
+        push_succeeded(&mut attempts, Strategy::PartialFractions, None);
         return IntegrationResult::Integrated {
             result: simplify(result),
             report: IntegrandReport {
@@ -416,122 +280,8 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         } else {
             AttemptStatus::NotApplicable
         };
-        attempts.push(IntegrationAttempt {
-            strategy: Strategy::PartialFractions,
-            status,
-            note: None,
-        });
+        push_attempt(&mut attempts, Strategy::PartialFractions, status, None);
     }
 
-    let mut risch_non_elem: Option<NonElementaryKind> = None;
-    let mut risch_full_non_elem: Option<NonElementaryKind> = None;
-    let mut risch_outcome = risch_lite::analyze(expr, var);
-    if matches!(risch_outcome, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
-        let retry = risch_lite::analyze(&original_expr, var);
-        if !matches!(retry, risch_lite::RischLiteOutcome::Indeterminate { .. }) {
-            risch_outcome = retry;
-        }
-    }
-    match risch_outcome {
-        risch_lite::RischLiteOutcome::Integrated { result, note } => {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::RischLite,
-                status: AttemptStatus::Succeeded,
-                note: Some(note),
-            });
-            return IntegrationResult::Integrated {
-                result: simplify(result),
-                report: IntegrandReport {
-                    kind,
-                    reason: None,
-                    attempts,
-                },
-            };
-        }
-        risch_lite::RischLiteOutcome::NonElementary { kind: ne_kind, note } => {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::RischLite,
-                status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind.clone())),
-                note: Some(note),
-            });
-            if !matches!(kind, IntegrandKind::NonElementary(_)) {
-                kind = IntegrandKind::NonElementary(ne_kind.clone());
-            }
-            risch_non_elem = Some(ne_kind);
-        }
-        risch_lite::RischLiteOutcome::Indeterminate { note } => {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::RischLite,
-                status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
-                note: Some(note),
-            });
-        }
-    }
-    let risch_outcome = risch::analyze(expr, var);
-    match risch_outcome {
-        risch::RischOutcome::Integrated { result, note } => {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::Risch,
-                status: AttemptStatus::Succeeded,
-                note: Some(note),
-            });
-            return IntegrationResult::Integrated {
-                result: simplify(result),
-                report: IntegrandReport {
-                    kind,
-                    reason: None,
-                    attempts,
-                },
-            };
-        }
-        risch::RischOutcome::NonElementary { kind: ne_kind, note } => {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::Risch,
-                status: AttemptStatus::Failed(ReasonCode::NonElementary(ne_kind.clone())),
-                note: Some(note),
-            });
-            if !matches!(kind, IntegrandKind::NonElementary(_)) {
-                kind = IntegrandKind::NonElementary(ne_kind.clone());
-            }
-            risch_full_non_elem = Some(ne_kind);
-        }
-        risch::RischOutcome::Indeterminate { note } => {
-            attempts.push(IntegrationAttempt {
-                strategy: Strategy::Risch,
-                status: AttemptStatus::Failed(ReasonCode::UnknownStructure),
-                note: Some(note),
-            });
-        }
-    }
-    attempts.push(IntegrationAttempt {
-        strategy: Strategy::MeijerG,
-        status: AttemptStatus::Failed(ReasonCode::StrategyNotAvailable("meijer-g expansion")),
-        note: None,
-    });
-
-    let reason = Some(match non_elem.or(risch_full_non_elem).or(risch_non_elem) {
-        Some(non_elem) => ReasonCode::NonElementary(non_elem),
-        None => default_reason(&kind),
-    });
-    IntegrationResult::NotIntegrable(IntegrandReport {
-        kind,
-        reason,
-        attempts,
-    })
-}
-
-fn integrate_partial_fractions(expr: &Expr, var: &str) -> Option<Expr> {
-    if !is_rational_like(expr, var) {
-        return None;
-    }
-    rational::integrate(expr, var)
-}
-
-fn default_reason(kind: &IntegrandKind) -> ReasonCode {
-    match kind {
-        IntegrandKind::Rational { .. } => ReasonCode::NonRational,
-        IntegrandKind::Trig => ReasonCode::NonPolynomialTrig,
-        IntegrandKind::NonElementary(ne) => ReasonCode::NonElementary(ne.clone()),
-        _ => ReasonCode::UnknownStructure,
-    }
+    finish_with_risch_attempts(attempts, expr, &original_expr, var, kind, non_elem)
 }

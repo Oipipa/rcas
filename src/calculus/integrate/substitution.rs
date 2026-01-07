@@ -88,6 +88,19 @@ pub(super) fn integrate_log_derivative(expr: &Expr, var: &str) -> Option<Expr> {
     Some(simplify(Expr::Mul(ratio.boxed(), log_abs(den).boxed())))
 }
 
+pub(super) fn substitution_candidates(expr: &Expr, original_expr: &Expr) -> (Expr, Vec<Expr>) {
+    let simplified = simplify_fully(expr.clone());
+    let mut candidates = Vec::new();
+    candidates.push(simplified.clone());
+    if simplified != *expr {
+        candidates.push(expr.clone());
+    }
+    if original_expr != expr && original_expr != &simplified {
+        candidates.push(original_expr.clone());
+    }
+    (simplified, candidates)
+}
+
 fn integrate_with_respect_to_inner(outer: &Expr, inner: &Expr) -> Option<Expr> {
     match outer {
         Expr::Exp(_) => Some(Expr::Exp(inner.clone().boxed())),
