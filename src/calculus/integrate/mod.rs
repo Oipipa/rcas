@@ -1,6 +1,7 @@
 mod common;
 mod cache;
 mod classify;
+mod direct;
 mod exponential;
 mod limits;
 mod logarithmic;
@@ -13,17 +14,12 @@ mod types;
 mod utils;
 
 use crate::calculus::risch::{risch, risch_lite};
-use crate::core::expr::{Expr, Rational};
+use crate::core::expr::Expr;
 use crate::simplify::{normalize, simplify, simplify_fully};
-use num_traits::{One, Zero};
 use classify::{classify_integrand, is_rational_like};
 use limits::TRANSFORM_SIZE_LIMIT;
 use parts::{integration_by_parts, integration_by_parts_tabular};
-use substitution::{integrate_by_substitution, integrate_log_derivative};
-use utils::{
-    as_rational_expr, combine_algebraic_factors, combine_var_powers,
-    distribute_product_with_addition, expr_size, is_constant_wrt, is_one_expr, is_zero_expr,
-};
+use substitution::integrate_by_substitution;
 
 pub(crate) use common::{coeff_of_var, linear_parts};
 pub use exponential::is_exp;
@@ -36,6 +32,11 @@ pub use types::{
     NonElementaryKind, ReasonCode, Strategy,
 };
 pub(crate) use classify::detect_non_elementary;
+use direct::{integrate_basic, integrate_direct};
+use utils::{
+    as_rational_expr, combine_algebraic_factors, combine_var_powers,
+    distribute_product_with_addition, expr_size, is_constant_wrt, is_one_expr, is_zero_expr,
+};
 pub(crate) use utils::{
     apply_constant_factor, constant_ratio, contains_var, flatten_product, log_abs, rebuild_product,
     split_constant_factors, to_rational_candidate,
@@ -517,79 +518,6 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
         reason,
         attempts,
     })
-}
-
-fn integrate_known(expr: &Expr, var: &str, include_log_derivative: bool) -> Option<Expr> {
-    let direct = polynomial::integrate(expr, var)
-        .or_else(|| rational::integrate(expr, var))
-        .or_else(|| trig::integrate(expr, var))
-        .or_else(|| exponential::integrate(expr, var))
-        .or_else(|| logarithmic::integrate(expr, var));
-    if include_log_derivative {
-        direct.or_else(|| integrate_log_derivative(expr, var))
-    } else {
-        direct
-    }
-}
-
-fn integrate_linear_ops(expr: &Expr, var: &str, include_log_derivative: bool) -> Option<Expr> {
-    if is_constant_wrt(expr, var) {
-        return Some(Expr::Mul(
-            expr.clone().boxed(),
-            Expr::Variable(var.to_string()).boxed(),
-        ));
-    }
-
-    let direct = match expr {
-        Expr::Add(a, b) => Some(Expr::Add(
-            integrate_linear_ops(a, var, include_log_derivative)?.boxed(),
-            integrate_linear_ops(b, var, include_log_derivative)?.boxed(),
-        )),
-        Expr::Sub(a, b) => Some(Expr::Sub(
-            integrate_linear_ops(a, var, include_log_derivative)?.boxed(),
-            integrate_linear_ops(b, var, include_log_derivative)?.boxed(),
-        )),
-        Expr::Neg(inner) => integrate_linear_ops(inner, var, include_log_derivative)
-            .map(|r| Expr::Neg(r.boxed())),
-        Expr::Div(num, den) => match (&**num, &**den) {
-            (other, Expr::Constant(c)) => integrate_linear_ops(other, var, include_log_derivative)
-                .map(|r| Expr::Div(r.boxed(), Expr::Constant(c.clone()).boxed())),
-            _ => integrate_known(expr, var, include_log_derivative),
-        },
-        Expr::Mul(a, b) => match (&**a, &**b) {
-            (Expr::Constant(c), other) | (other, Expr::Constant(c)) => {
-                integrate_linear_ops(other, var, include_log_derivative)
-                    .map(|r| Expr::Mul(Expr::Constant(c.clone()).boxed(), r.boxed()))
-            }
-            _ => integrate_known(expr, var, include_log_derivative),
-        },
-        _ => integrate_known(expr, var, include_log_derivative),
-    };
-
-    if direct.is_some() {
-        return direct;
-    }
-
-    let (const_expr, factors) = split_constant_factors(expr, var);
-    if is_zero_expr(&const_expr) {
-        return Some(Expr::Constant(Rational::zero()));
-    }
-    if !is_one_expr(&const_expr) {
-        let rest = rebuild_product(Rational::one(), factors);
-        if let Some(result) = integrate_linear_ops(&rest, var, include_log_derivative) {
-            return Some(apply_constant_factor(const_expr, result));
-        }
-    }
-
-    None
-}
-
-fn integrate_direct(expr: &Expr, var: &str) -> Option<Expr> {
-    integrate_linear_ops(expr, var, true)
-}
-
-fn integrate_basic(expr: &Expr, var: &str) -> Option<Expr> {
-    integrate_linear_ops(expr, var, false)
 }
 
 fn integrate_partial_fractions(expr: &Expr, var: &str) -> Option<Expr> {

@@ -1,8 +1,8 @@
 use crate::core::expr::{Expr, Rational};
-use crate::simplify::{simplify, simplify_fully};
+use crate::simplify::simplify;
 use num_traits::{One, Zero};
 
-use super::contains_var;
+use super::{contains_var, is_zero_expr};
 
 /// Extract (coefficient, constant) from a linear expression `a*var + b`.
 pub fn linear_parts(expr: &Expr, var: &str) -> Option<(Expr, Expr)> {
@@ -74,8 +74,4 @@ pub fn coeff_of_var(expr: &Expr, var: &str) -> Option<Expr> {
     } else {
         Some(coef)
     }
-}
-
-fn is_zero_expr(expr: &Expr) -> bool {
-    matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_zero())
 }
