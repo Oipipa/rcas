@@ -406,29 +406,54 @@ fn integrate_rothstein_trager(numerator: &Poly, denominator: &Poly, var: &str) -
         if degree == 0 {
             continue;
         }
-        if degree != 1 {
-            // Algebraic residues need algebraic constants, which Expr cannot represent yet.
-            return None;
-        }
-        let gcd_coeffs = poly_x_gcd_mod(&b_coeffs, &a_t_coeffs, &s)?;
-        let g_t_coeffs = transpose_coeffs_x_t(&gcd_coeffs);
-        if g_t_coeffs.is_empty() {
+        if degree == 1 {
+            let gcd_coeffs = poly_x_gcd_mod(&b_coeffs, &a_t_coeffs, &s)?;
+            let g_t_coeffs = transpose_coeffs_x_t(&gcd_coeffs);
+            if g_t_coeffs.is_empty() {
+                continue;
+            }
+            let s_t_coeffs = poly_coeffs_const(&s);
+            let res_xt = resultant_from_coeffs(&s_t_coeffs, &g_t_coeffs)?;
+            if res_xt.degree().unwrap_or(0) == 0 {
+                continue;
+            }
+            let leading = s.coeff(1);
+            if leading.is_zero() {
+                return None;
+            }
+            let coeff = -s.coeff(0) / leading;
+            terms.push(Expr::Mul(
+                Expr::Constant(coeff).boxed(),
+                log_abs(res_xt.to_expr(var)).boxed(),
+            ));
             continue;
         }
-        let s_t_coeffs = poly_coeffs_const(&s);
-        let res_xt = resultant_from_coeffs(&s_t_coeffs, &g_t_coeffs)?;
-        if res_xt.degree().unwrap_or(0) == 0 {
+
+        if degree == 2 {
+            let gcd_coeffs = poly_x_gcd_mod(&b_coeffs, &a_t_coeffs, &s)?;
+            let g_t_coeffs = transpose_coeffs_x_t(&gcd_coeffs);
+            if g_t_coeffs.is_empty() {
+                continue;
+            }
+            let (roots, d) = quadratic_roots_quadext(&s)?;
+            for root in roots {
+                if root.is_zero() {
+                    continue;
+                }
+                let g_at_root = quad_poly_eval_t(&g_t_coeffs, &root, &d);
+                if g_at_root.coeffs.is_empty() || g_at_root.coeffs.len() == 1 {
+                    continue;
+                }
+                terms.push(Expr::Mul(
+                    root.to_expr().boxed(),
+                    log_abs(g_at_root.to_expr(var, &d)).boxed(),
+                ));
+            }
             continue;
         }
-        let leading = s.coeff(1);
-        if leading.is_zero() {
-            return None;
-        }
-        let coeff = -s.coeff(0) / leading;
-        terms.push(Expr::Mul(
-            Expr::Constant(coeff).boxed(),
-            log_abs(res_xt.to_expr(var)).boxed(),
-        ));
+
+        // Algebraic residues beyond quadratic need higher extensions.
+        return None;
     }
 
     Some(simplify(sum_exprs(terms)))
@@ -1203,6 +1228,53 @@ impl QuadPoly {
         }
         sum_exprs(terms)
     }
+}
+
+fn quadratic_roots_quadext(poly: &Poly) -> Option<(Vec<QuadExt>, Rational)> {
+    if poly.degree()? != 2 {
+        return None;
+    }
+    let a = poly.coeff(2);
+    if a.is_zero() {
+        return None;
+    }
+    let b = poly.coeff(1);
+    let c = poly.coeff(0);
+    let two = Rational::from_integer(2.into());
+    let four = Rational::from_integer(4.into());
+    let disc = b.clone() * b.clone() - four * a.clone() * c.clone();
+    let two_a = two * a.clone();
+    if two_a.is_zero() {
+        return None;
+    }
+    let d = disc;
+    let center = QuadExt::from_rational(-b / two_a.clone(), &d);
+    let scale = QuadExt::from_rational(Rational::one() / two_a, &d);
+    let sqrt_unit = QuadExt::new(Rational::zero(), Rational::one(), d.clone());
+    let root = center.clone() + scale.clone() * sqrt_unit.clone();
+    if d.is_zero() {
+        return Some((vec![root], d));
+    }
+    let root_conj = center - scale * sqrt_unit;
+    Some((vec![root, root_conj], d))
+}
+
+fn quad_poly_eval_t(coeffs_t: &[Poly], root: &QuadExt, d: &Rational) -> QuadPoly {
+    let mut coeffs: Vec<QuadExt> = Vec::new();
+    let mut root_pow = QuadExt::one(d);
+    for coeff_poly in coeffs_t {
+        if !coeff_poly.is_zero() {
+            for (x_exp, coeff) in coeff_poly.coeff_entries() {
+                if coeffs.len() <= x_exp {
+                    coeffs.resize(x_exp + 1, QuadExt::zero(d));
+                }
+                let term = QuadExt::from_rational(coeff, d) * root_pow.clone();
+                coeffs[x_exp] = coeffs[x_exp].clone() + term;
+            }
+        }
+        root_pow = root_pow * root.clone();
+    }
+    QuadPoly::from_coeffs(coeffs)
 }
 
 fn sqrt_rational_expr(value: &Rational) -> Expr {

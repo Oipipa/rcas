@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{One, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::calculus::integrate::{contains_var, flatten_product, log_abs, rebuild_product};
 use crate::core::expr::{Expr, Rational};
@@ -37,6 +37,21 @@ pub(super) fn analyze_algebraic(expr: &Expr, var: &str) -> Option<RischOutcome> 
             kind: crate::calculus::integrate::NonElementaryKind::SpecialFunctionNeeded,
             note: "algebraic sqrt degree > 2".to_string(),
         });
+    }
+
+    if degree == 2 {
+        if let Some(result) = integrate_sqrt_quadratic_over_x(expr, var, &base_poly) {
+            return Some(RischOutcome::Integrated {
+                result: simplify_fully(result),
+                note: "algebraic quadratic sqrt/x substitution".to_string(),
+            });
+        }
+        if let Some(result) = integrate_quadratic_sqrt_substitution(expr, var, &base_poly) {
+            return Some(RischOutcome::Integrated {
+                result: simplify_fully(result),
+                note: "algebraic quadratic sqrt substitution".to_string(),
+            });
+        }
     }
 
     if let Some(result) = integrate_algebraic_expr(expr, var, &base, &base_poly) {
@@ -122,6 +137,120 @@ fn integrate_linear_sqrt_substitution(
             .boxed(),
     );
     let restored = substitute(&result_u, &u_name, &sqrt_expr);
+    Some(simplify_fully(restored))
+}
+
+fn integrate_sqrt_quadratic_over_x(expr: &Expr, var: &str, base_poly: &Poly) -> Option<Expr> {
+    if base_poly.degree()? != 2 {
+        return None;
+    }
+    if !base_poly.coeff(0).is_zero() {
+        return None;
+    }
+    let a = base_poly.coeff(2);
+    let b = base_poly.coeff(1);
+    if !a.is_negative() || b.is_zero() || b.is_negative() {
+        return None;
+    }
+
+    let (const_factor, factors) = flatten_product(expr);
+    let mut sqrt_found = false;
+    let mut var_power = Rational::zero();
+    let mut other_factors = Vec::new();
+    let half = Rational::from_integer(1.into()) / Rational::from_integer(2.into());
+
+    for factor in factors {
+        match factor {
+            Expr::Variable(name) if name == var => {
+                var_power += Rational::one();
+            }
+            Expr::Pow(base, exp) => match (&*base, &*exp) {
+                (Expr::Variable(name), Expr::Constant(k)) if name == var => {
+                    var_power += k.clone();
+                }
+                (_, Expr::Constant(k)) if *k == half => {
+                    let base_poly_candidate = Poly::from_expr(&base, var)?;
+                    if base_poly_candidate == *base_poly {
+                        sqrt_found = true;
+                    } else {
+                        other_factors.push(Expr::Pow(base.clone(), exp.clone()));
+                    }
+                }
+                _ => other_factors.push(Expr::Pow(base.clone(), exp.clone())),
+            },
+            other => other_factors.push(other),
+        }
+    }
+
+    if !sqrt_found {
+        return None;
+    }
+    if !other_factors.is_empty() {
+        return None;
+    }
+    let neg_one = Rational::from_integer((-1).into());
+    if var_power != neg_one {
+        return None;
+    }
+
+    let sqrt_base = Expr::Pow(
+        base_poly.to_expr(var).boxed(),
+        Expr::Constant(half.clone()).boxed(),
+    );
+    let sqrt_neg_a = Expr::Pow(
+        Expr::Constant(-a.clone()).boxed(),
+        Expr::Constant(half.clone()).boxed(),
+    );
+    let asin_coeff = Expr::Div(Expr::Constant(b.clone()).boxed(), sqrt_neg_a.boxed());
+    let inner_coeff = -a / b;
+    let asin_arg = Expr::Pow(
+        Expr::Mul(
+            Expr::Constant(inner_coeff).boxed(),
+            Expr::Variable(var.to_string()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(half).boxed(),
+    );
+    let asin_term = Expr::Mul(asin_coeff.boxed(), Expr::Asin(asin_arg.boxed()).boxed());
+    let sum = Expr::Add(sqrt_base.boxed(), asin_term.boxed());
+    Some(simplify_fully(Expr::Mul(
+        Expr::Constant(const_factor).boxed(),
+        sum.boxed(),
+    )))
+}
+
+fn integrate_quadratic_sqrt_substitution(
+    expr: &Expr,
+    var: &str,
+    base_poly: &Poly,
+) -> Option<Expr> {
+    if base_poly.degree()? != 2 {
+        return None;
+    }
+    if !base_poly.coeff(0).is_zero() {
+        return None;
+    }
+    if !has_negative_var_power(expr, var) {
+        return None;
+    }
+
+    let u_name = fresh_symbol(expr, "__u");
+    let u_expr = Expr::Variable(u_name.clone());
+    let x_sub = Expr::Pow(u_expr.clone().boxed(), Expr::integer(2).boxed());
+    let substituted = simplify_fully(substitute(expr, var, &x_sub));
+    let dx_du = Expr::Mul(
+        Expr::Constant(Rational::from_integer(2.into())).boxed(),
+        u_expr.clone().boxed(),
+    );
+    let integrand_u = simplify_fully(Expr::Mul(substituted.boxed(), dx_du.boxed()));
+    let result_u = integrate_in_base(&integrand_u, &u_name)?;
+
+    let sqrt_x = Expr::Pow(
+        Expr::Variable(var.to_string()).boxed(),
+        Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+            .boxed(),
+    );
+    let restored = substitute(&result_u, &u_name, &sqrt_x);
     Some(simplify_fully(restored))
 }
 
@@ -222,6 +351,42 @@ fn collect_vars(expr: &Expr, out: &mut HashSet<String>) {
         | Expr::Log(inner)
         | Expr::Abs(inner) => collect_vars(inner, out),
         Expr::Constant(_) => {}
+    }
+}
+
+fn has_negative_var_power(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Pow(base, exp) => match (&**base, &**exp) {
+            (Expr::Variable(name), Expr::Constant(k)) if name == var => k.is_negative(),
+            _ => has_negative_var_power(base, var) || has_negative_var_power(exp, var),
+        },
+        Expr::Div(_, denom) => contains_var(denom, var),
+        Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) => {
+            has_negative_var_power(a, var) || has_negative_var_power(b, var)
+        }
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Exp(inner)
+        | Expr::Log(inner)
+        | Expr::Abs(inner) => has_negative_var_power(inner, var),
+        Expr::Variable(_) | Expr::Constant(_) => false,
     }
 }
 
@@ -607,6 +772,76 @@ fn integrate_poly_over_sqrt_quadratic(poly: &Poly, base_poly: &Poly, var: &str) 
         Expr::Constant(h).boxed(),
     );
     let u_sq = Expr::Pow(u_expr.clone().boxed(), Expr::integer(2).boxed());
+    let max_deg = shifted.degree().unwrap_or(0);
+
+    if a.is_negative() && d.is_negative() {
+        let d_pos = -d.clone();
+        let u2_minus_d = Expr::Sub(
+            Expr::Constant(d_pos.clone()).boxed(),
+            u_sq.boxed(),
+        );
+        let sqrt_expr = Expr::Pow(
+            u2_minus_d.boxed(),
+            Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                .boxed(),
+        );
+        let sqrt_d = Expr::Pow(
+            Expr::Constant(d_pos.clone()).boxed(),
+            Expr::Constant(Rational::from_integer(1.into()) / Rational::from_integer(2.into()))
+                .boxed(),
+        );
+        let asin_arg = Expr::Div(u_expr.clone().boxed(), sqrt_d.boxed());
+
+        let mut integrals: Vec<Expr> = Vec::with_capacity(max_deg + 1);
+        integrals.push(Expr::Asin(asin_arg.boxed()));
+        if max_deg >= 1 {
+            integrals.push(Expr::Neg(sqrt_expr.clone().boxed()));
+        }
+        for n in 2..=max_deg {
+            let n_rat = Rational::from_integer(BigInt::from(n as i64));
+            let term1 = Expr::Div(
+                Expr::Mul(
+                    pow_expr(&u_expr, n - 1).boxed(),
+                    sqrt_expr.clone().boxed(),
+                )
+                .boxed(),
+                Expr::Constant(n_rat.clone()).boxed(),
+            );
+            let coeff = Rational::from_integer(BigInt::from((n - 1) as i64)) * d_pos.clone()
+                / n_rat;
+            let term2 = Expr::Mul(
+                Expr::Constant(coeff).boxed(),
+                integrals[n - 2].clone().boxed(),
+            );
+            let expr = Expr::Sub(term2.boxed(), term1.boxed());
+            integrals.push(simplify_fully(expr));
+        }
+
+        let mut sum: Option<Expr> = None;
+        for (exp, coeff) in shifted.coeff_entries() {
+            if coeff.is_zero() {
+                continue;
+            }
+            let term = Expr::Mul(
+                Expr::Constant(coeff).boxed(),
+                integrals[exp].clone().boxed(),
+            );
+            sum = Some(match sum {
+                None => term,
+                Some(acc) => Expr::Add(acc.boxed(), term.boxed()),
+            });
+        }
+        let sum = sum.unwrap_or_else(|| Expr::Constant(Rational::zero()));
+        let scale = Expr::Pow(
+            Expr::Constant(-a.clone()).boxed(),
+            Expr::Constant(
+                Rational::from_integer(BigInt::from(-1)) / Rational::from_integer(2.into()),
+            )
+            .boxed(),
+        );
+        return Some(simplify_fully(Expr::Mul(scale.boxed(), sum.boxed())));
+    }
+
     let u2_plus_d = Expr::Add(u_sq.boxed(), Expr::Constant(d.clone()).boxed());
     let sqrt_expr = Expr::Pow(
         u2_plus_d.boxed(),
@@ -614,7 +849,6 @@ fn integrate_poly_over_sqrt_quadratic(poly: &Poly, base_poly: &Poly, var: &str) 
             .boxed(),
     );
 
-    let max_deg = shifted.degree().unwrap_or(0);
     let mut integrals: Vec<Expr> = Vec::with_capacity(max_deg + 1);
     integrals.push(log_abs(Expr::Add(
         u_expr.clone().boxed(),

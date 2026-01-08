@@ -1566,6 +1566,7 @@ fn rational_rothstein_trager_roundtrip_suite() {
             "(4*x^3 + 1)*(x^4 + x + 2)/(x^4 + x + 1)^2",
             vec![0.1, 0.6, 1.2],
         ),
+        ("x/(x^4 - 2)", vec![0.2, 0.8, 1.4]),
     ];
 
     for (input, samples) in cases {
@@ -1700,6 +1701,20 @@ fn algebraic_linear_sqrt_roundtrip_suite() {
 
     assert_eq!(cases.len(), 1, "expected 1 linear sqrt case");
     for input in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn algebraic_quadratic_trig_substitution_roundtrip_suite() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        ("(2*x-x^2)^(1/2)/x", vec![0.2, 0.6, 1.1, 1.7]),
+        ("(3*x-x^2)^(1/2)/x", vec![0.2, 0.9, 1.6, 2.4]),
+        ("(5*x-x^2)^(1/2)/x", vec![0.5, 1.4, 2.6, 4.2]),
+    ];
+
+    assert_eq!(cases.len(), 3, "expected 3 quadratic trig cases");
+    for (input, samples) in cases {
         assert_numeric_roundtrip(input, &samples);
     }
 }

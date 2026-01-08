@@ -1,7 +1,7 @@
 use rcas::prelude::inte;
 
 fn main() {
-    let expr = "1/(x^5+1)";
+    let expr = "(2*x-x^2)^1/2/x";
     let var = "x";
 
     match inte(expr, var) {
