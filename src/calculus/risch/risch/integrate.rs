@@ -4,7 +4,7 @@ use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
 use crate::calculus::integrate::{contains_var, log_abs, polynomial, rational};
-use crate::calculus::risch::diff_field::{ExtensionKind, Tower};
+use crate::calculus::risch::diff_field::{AlgebraicExtension, ExtensionKind, Tower};
 use crate::core::expr::{Expr, Rational};
 use crate::simplify::simplify_fully;
 
@@ -93,6 +93,33 @@ fn integrate_log_extension(expr_sym: &Expr, var: &str, tower: &Tower) -> RischSt
 }
 
 fn integrate_algebraic_extension(expr_sym: &Expr, var: &str, tower: &Tower) -> RischStep {
+    let t_symbol = tower.top_symbol();
+    let lower_symbols = lower_symbol_set(tower);
+    let t_deriv = tower.top_derivative_expr();
+    if let Some(result) =
+        integrate_by_symbol_substitution(expr_sym, var, t_symbol, &t_deriv, &lower_symbols)
+    {
+        return RischStep::Integrated {
+            result,
+            note: "risch algebraic substitution".to_string(),
+        };
+    }
+    if let Some(algebraic) = tower.extensions().last().and_then(|ext| ext.algebraic.as_ref()) {
+        let expr_rewritten = rewrite_algebraic_base(expr_sym, algebraic, t_symbol);
+        let deriv_rewritten = rewrite_algebraic_base(&t_deriv, algebraic, t_symbol);
+        if let Some(result) = integrate_by_symbol_substitution(
+            &expr_rewritten,
+            var,
+            t_symbol,
+            &deriv_rewritten,
+            &lower_symbols,
+        ) {
+            return RischStep::Integrated {
+                result,
+                note: "risch algebraic substitution".to_string(),
+            };
+        }
+    }
     let expanded = tower.expand_symbols(expr_sym);
     if let Some(outcome) = analyze_algebraic(&expanded, var) {
         return match outcome {
@@ -552,6 +579,70 @@ fn integrate_by_symbol_substitution(
     }
 
     polynomial::integrate(&ratio, t_symbol).or_else(|| rational::integrate(&ratio, t_symbol))
+}
+
+fn rewrite_algebraic_base(
+    expr: &Expr,
+    algebraic: &AlgebraicExtension,
+    t_symbol: &str,
+) -> Expr {
+    let replacement = t_power_expr(t_symbol, algebraic.degree as i64);
+    simplify_fully(replace_subexpr(
+        expr,
+        &algebraic.base_symbol,
+        &replacement,
+    ))
+}
+
+fn replace_subexpr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
+    if expr == target {
+        return replacement.clone();
+    }
+    match expr {
+        Expr::Add(a, b) => Expr::Add(
+            replace_subexpr(a, target, replacement).boxed(),
+            replace_subexpr(b, target, replacement).boxed(),
+        ),
+        Expr::Sub(a, b) => Expr::Sub(
+            replace_subexpr(a, target, replacement).boxed(),
+            replace_subexpr(b, target, replacement).boxed(),
+        ),
+        Expr::Mul(a, b) => Expr::Mul(
+            replace_subexpr(a, target, replacement).boxed(),
+            replace_subexpr(b, target, replacement).boxed(),
+        ),
+        Expr::Div(a, b) => Expr::Div(
+            replace_subexpr(a, target, replacement).boxed(),
+            replace_subexpr(b, target, replacement).boxed(),
+        ),
+        Expr::Pow(a, b) => Expr::Pow(
+            replace_subexpr(a, target, replacement).boxed(),
+            replace_subexpr(b, target, replacement).boxed(),
+        ),
+        Expr::Neg(inner) => Expr::Neg(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Sin(inner) => Expr::Sin(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Cos(inner) => Expr::Cos(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Tan(inner) => Expr::Tan(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Sec(inner) => Expr::Sec(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Csc(inner) => Expr::Csc(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Cot(inner) => Expr::Cot(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Atan(inner) => Expr::Atan(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Asin(inner) => Expr::Asin(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Acos(inner) => Expr::Acos(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Asec(inner) => Expr::Asec(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Acsc(inner) => Expr::Acsc(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Acot(inner) => Expr::Acot(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Sinh(inner) => Expr::Sinh(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Cosh(inner) => Expr::Cosh(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Tanh(inner) => Expr::Tanh(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Asinh(inner) => Expr::Asinh(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Acosh(inner) => Expr::Acosh(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Atanh(inner) => Expr::Atanh(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Exp(inner) => Expr::Exp(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Log(inner) => Expr::Log(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Abs(inner) => Expr::Abs(replace_subexpr(inner, target, replacement).boxed()),
+        Expr::Variable(_) | Expr::Constant(_) => expr.clone(),
+    }
 }
 
 fn exp_derivative_coeff(t_deriv: &Expr, t_symbol: &str) -> Option<Expr> {

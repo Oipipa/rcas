@@ -18,7 +18,7 @@ mod utils;
 
 use crate::calculus::risch::risch_lite;
 use crate::core::expr::Expr;
-use crate::simplify::{normalize, simplify};
+use crate::simplify::{normalize, simplify, simplify_fully};
 use classify::{classify_integrand, is_rational_like};
 use limits::TRANSFORM_SIZE_LIMIT;
 use parts::{integration_by_parts, integration_by_parts_tabular};
@@ -139,7 +139,7 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
     };
     let expr = &expr_owned;
 
-    if &original_expr != expr {
+    if &original_expr != expr && non_elem.is_none() {
         non_elem = detect_non_elementary(expr, var);
     }
     if let Some(ref detected) = non_elem {
@@ -217,9 +217,19 @@ pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
                 );
             }
             let risch_outcome = analyze_lite_with_retry(expr, &original_expr, var);
-            if let risch_lite::RischLiteOutcome::Integrated { result, note } = risch_outcome {
+            if let risch_lite::RischLiteOutcome::Integrated {
+                result: risch_result,
+                note,
+            } = risch_outcome
+            {
                 push_succeeded(&mut attempts, Strategy::RischLite, Some(note));
-                final_result = result;
+                let diff = simplify_fully(Expr::Sub(
+                    risch_result.clone().boxed(),
+                    final_result.clone().boxed(),
+                ));
+                if !is_constant_wrt(&diff, var) {
+                    final_result = risch_result;
+                }
             }
             return IntegrationResult::Integrated {
                 result: simplify(final_result),

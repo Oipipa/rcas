@@ -1,7 +1,7 @@
 use crate::calculus::integrate::NonElementaryKind;
 use crate::core::expr::Expr;
 use crate::core::polynomial::Polynomial;
-use crate::simplify::simplify_fully;
+use crate::simplify::{normalize_for_risch, simplify_fully};
 
 mod algebraic;
 mod expr_poly;
@@ -26,7 +26,8 @@ enum RischStep {
 }
 
 pub fn analyze(expr: &Expr, var: &str) -> RischOutcome {
-    let simplified = simplify_fully(expr.clone());
+    let normalized = normalize_for_risch(expr.clone(), var);
+    let simplified = simplify_fully(normalized);
     if let Some(outcome) = algebraic::analyze_algebraic(&simplified, var) {
         return outcome;
     }

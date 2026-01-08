@@ -1,5 +1,5 @@
 use crate::core::expr::{Expr, Rational};
-use crate::core::factor::{factor_polynomial, Factorization, Poly};
+use crate::core::factor::{factor_polynomial, Factor, Factorization, Poly};
 use crate::simplify::simplify;
 use super::{flatten_product, log_abs, rebuild_product};
 use num_bigint::BigInt;
@@ -72,24 +72,32 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
         if num_term.is_zero() {
             continue;
         }
-        let mut partial_fraction = integrate_cyclotomic_quartic_quintic(&num_term, &den_term, var);
+        let mut partial_fraction =
+            integrate_palindromic_quartic_quintic(&num_term, &den_term, var);
         if let Some(factorization) = factor_polynomial(&den_term.to_expr(var), var) {
             if !factorization.constant.is_zero()
                 && factorization
                     .factors
                     .iter()
-                    .all(|f| matches!(f.poly.degree(), Some(1 | 2)))
+                    .all(|f| {
+                        matches!(f.poly.degree(), Some(1 | 2))
+                            || matches!(f.poly.degree(), Some(4 | 5))
+                                && is_palindromic_quartic_quintic(&f.poly)
+                    })
             {
                 let scaled_num =
                     num_term.scale(&(Rational::one() / factorization.constant.clone()));
                 let denominator = build_denominator(&factorization);
-                partial_fraction = integrate_partial_fraction(
-                    &scaled_num,
-                    &denominator,
-                    &factorization,
-                    var,
-                );
+                if let Some(expr) =
+                    integrate_partial_fraction(&scaled_num, &denominator, &factorization, var)
+                {
+                    partial_fraction = Some(expr);
+                }
             }
+        }
+        if partial_fraction.is_none() {
+            partial_fraction =
+                integrate_even_palindromic_sextic(&num_term, &den_term, var);
         }
 
         let term = match partial_fraction {
@@ -141,7 +149,8 @@ fn integrate_partial_fraction(
     let mut idx = 0;
 
     for factor in &factorization.factors {
-        match factor.poly.degree()? {
+        let factor_degree = factor.poly.degree()?;
+        match factor_degree {
             1 => {
                 for power in 1..=factor.multiplicity {
                     let coeff = solution.get(idx)?.clone();
@@ -168,6 +177,25 @@ fn integrate_partial_fraction(
                         var,
                     )?);
                 }
+            }
+            4 | 5 => {
+                if factor.multiplicity != 1 {
+                    return None;
+                }
+                let mut coeffs = Vec::with_capacity(factor_degree);
+                for _ in 0..factor_degree {
+                    coeffs.push(solution.get(idx)?.clone());
+                    idx += 1;
+                }
+                if coeffs.iter().all(|c| c.is_zero()) {
+                    continue;
+                }
+                let numerator = poly_from_desc_coeffs(&coeffs);
+                terms.push(integrate_palindromic_quartic_quintic(
+                    &numerator,
+                    &factor.poly,
+                    var,
+                )?);
             }
             _ => return None,
         }
@@ -464,6 +492,22 @@ fn poly_monomial(coeff: Rational, exp: usize) -> Poly {
     Poly { coeffs }
 }
 
+fn poly_from_desc_coeffs(coeffs: &[Rational]) -> Poly {
+    if coeffs.is_empty() {
+        return Poly::zero();
+    }
+    let mut map = BTreeMap::new();
+    let degree = coeffs.len();
+    for (idx, coeff) in coeffs.iter().enumerate() {
+        if coeff.is_zero() {
+            continue;
+        }
+        let exp = degree - 1 - idx;
+        map.insert(exp, coeff.clone());
+    }
+    Poly { coeffs: map }
+}
+
 fn trim_poly_coeffs(coeffs: &mut Vec<Poly>) {
     while coeffs.last().map(|c| c.is_zero()).unwrap_or(false) {
         coeffs.pop();
@@ -750,6 +794,19 @@ fn basis_for_system(
                 2 => {
                     basis.push(term.clone() * x_poly.clone());
                     basis.push(term);
+                }
+                4 | 5 => {
+                    if !is_palindromic_quartic_quintic(&factor.poly) {
+                        return None;
+                    }
+                    for exp in (0..degree).rev() {
+                        let power = if exp == 0 {
+                            Poly::one()
+                        } else {
+                            x_poly.clone().pow(exp)
+                        };
+                        basis.push(term.clone() * power);
+                    }
                 }
                 _ => return None,
             }
@@ -1215,58 +1272,168 @@ fn solve_linear_system_quad(mut matrix: Vec<Vec<QuadExt>>, d: &Rational) -> Opti
     Some(solution)
 }
 
-fn integrate_cyclotomic_quartic_quintic(
+fn integrate_palindromic_quartic_quintic(
     numerator: &Poly,
     denominator: &Poly,
     var: &str,
 ) -> Option<Expr> {
-    if poly_is_x4_plus_one(denominator) {
-        return integrate_x4_plus_one(numerator, var);
+    if let Some((a, b)) = palindromic_quartic_coeffs(denominator) {
+        return integrate_palindromic_quartic(numerator, a, b, var);
     }
-    if poly_is_x5_plus_one(denominator) {
-        return integrate_x5_plus_one(numerator, var);
+    if let Some((a, b)) = palindromic_quintic_coeffs(denominator) {
+        return integrate_palindromic_quintic(numerator, a, b, var);
     }
     None
 }
 
-fn poly_is_x4_plus_one(poly: &Poly) -> bool {
+fn is_palindromic_quartic_quintic(poly: &Poly) -> bool {
+    palindromic_quartic_coeffs(poly).is_some() || palindromic_quintic_coeffs(poly).is_some()
+}
+
+fn palindromic_quartic_coeffs(poly: &Poly) -> Option<(Rational, Rational)> {
     if poly.degree() != Some(4) {
-        return false;
+        return None;
     }
-    if poly.coeff(4) != Rational::one() || poly.coeff(0) != Rational::one() {
-        return false;
+    let leading = poly.coeff(4);
+    if leading.is_zero() {
+        return None;
     }
-    for (exp, coeff) in poly.coeff_entries() {
-        if exp != 0 && exp != 4 && !coeff.is_zero() {
-            return false;
-        }
+    let inv_leading = Rational::one() / leading.clone();
+    let constant = poly.coeff(0) * inv_leading.clone();
+    if !constant.is_one() {
+        return None;
     }
-    true
+    let a = poly.coeff(3) * inv_leading.clone();
+    let b = poly.coeff(2) * inv_leading.clone();
+    let c1 = poly.coeff(1) * inv_leading;
+    if a != c1 {
+        return None;
+    }
+    Some((a, b))
 }
 
-fn poly_is_x5_plus_one(poly: &Poly) -> bool {
+fn palindromic_quintic_coeffs(poly: &Poly) -> Option<(Rational, Rational)> {
     if poly.degree() != Some(5) {
-        return false;
+        return None;
     }
-    if poly.coeff(5) != Rational::one() || poly.coeff(0) != Rational::one() {
-        return false;
+    let leading = poly.coeff(5);
+    if leading.is_zero() {
+        return None;
     }
-    for (exp, coeff) in poly.coeff_entries() {
-        if exp != 0 && exp != 5 && !coeff.is_zero() {
-            return false;
-        }
+    let inv_leading = Rational::one() / leading.clone();
+    let constant = poly.coeff(0) * inv_leading.clone();
+    if !constant.is_one() {
+        return None;
     }
-    true
+    let a = poly.coeff(4) * inv_leading.clone();
+    let b = poly.coeff(3) * inv_leading.clone();
+    let c2 = poly.coeff(2) * inv_leading.clone();
+    let c1 = poly.coeff(1) * inv_leading;
+    if a != c1 || b != c2 {
+        return None;
+    }
+    Some((a, b))
 }
 
-fn integrate_x4_plus_one(numerator: &Poly, var: &str) -> Option<Expr> {
-    let d = Rational::from_integer(2.into());
-    let sqrt = QuadExt::new(Rational::zero(), Rational::one(), d.clone());
-    let one = QuadExt::one(&d);
-    let minus_sqrt = QuadExt::new(Rational::zero(), -Rational::one(), d.clone());
+fn integrate_even_palindromic_sextic(
+    numerator: &Poly,
+    denominator: &Poly,
+    var: &str,
+) -> Option<Expr> {
+    let factorization = factor_even_palindromic_sextic(denominator)?;
+    if factorization.constant.is_zero() {
+        return None;
+    }
+    let scaled_num = numerator.scale(&(Rational::one() / factorization.constant.clone()));
+    let denominator = build_denominator(&factorization);
+    integrate_partial_fraction(&scaled_num, &denominator, &factorization, var)
+}
 
-    let q_pos = QuadPoly::from_coeffs(vec![one.clone(), sqrt.clone(), one.clone()]);
-    let q_neg = QuadPoly::from_coeffs(vec![one.clone(), minus_sqrt.clone(), one.clone()]);
+fn factor_even_palindromic_sextic(poly: &Poly) -> Option<Factorization> {
+    // Factor x^6 + a x^4 + a x^2 + 1 via y = x^2 and y^3 + 1 = (y + 1)(y^2 + (a - 1)y + 1).
+    if poly.degree() != Some(6) {
+        return None;
+    }
+    let leading = poly.coeff(6);
+    if leading.is_zero() {
+        return None;
+    }
+    let inv_leading = Rational::one() / leading.clone();
+    let constant = poly.coeff(0) * inv_leading.clone();
+    if !constant.is_one() {
+        return None;
+    }
+    let c5 = poly.coeff(5) * inv_leading.clone();
+    let c3 = poly.coeff(3) * inv_leading.clone();
+    let c1 = poly.coeff(1) * inv_leading.clone();
+    if !c5.is_zero() || !c3.is_zero() || !c1.is_zero() {
+        return None;
+    }
+    let a = poly.coeff(4) * inv_leading.clone();
+    let b = poly.coeff(2) * inv_leading.clone();
+    if a != b {
+        return None;
+    }
+
+    let quartic_mid = a - Rational::one();
+    let mut quad_coeffs = BTreeMap::new();
+    quad_coeffs.insert(2, Rational::one());
+    quad_coeffs.insert(0, Rational::one());
+    let quad = Poly { coeffs: quad_coeffs };
+
+    let mut quartic_coeffs = BTreeMap::new();
+    quartic_coeffs.insert(4, Rational::one());
+    if !quartic_mid.is_zero() {
+        quartic_coeffs.insert(2, quartic_mid);
+    }
+    quartic_coeffs.insert(0, Rational::one());
+    let quartic = Poly {
+        coeffs: quartic_coeffs,
+    };
+
+    Some(Factorization {
+        constant: leading,
+        factors: vec![
+            Factor {
+                poly: quad,
+                multiplicity: 1,
+            },
+            Factor {
+                poly: quartic,
+                multiplicity: 1,
+            },
+        ],
+    })
+}
+
+fn palindromic_quartic_factors(
+    a: &Rational,
+    b: &Rational,
+) -> Option<(QuadPoly, QuadPoly, Rational)> {
+    let two = Rational::from_integer(2.into());
+    let four = Rational::from_integer(4.into());
+    let disc = a.clone() * a.clone() - four * (b.clone() - two);
+    if disc.is_zero() {
+        return None;
+    }
+    let half = Rational::new(1.into(), 2.into());
+    let d = disc;
+    let one = QuadExt::one(&d);
+    let p = QuadExt::new(a.clone() * half.clone(), half.clone(), d.clone());
+    let q = QuadExt::new(a.clone() * half.clone(), -half, d.clone());
+    let q_pos = QuadPoly::from_coeffs(vec![one.clone(), p, one.clone()]);
+    let q_neg = QuadPoly::from_coeffs(vec![one.clone(), q, one.clone()]);
+    Some((q_pos, q_neg, d))
+}
+
+fn integrate_palindromic_quartic(
+    numerator: &Poly,
+    a: Rational,
+    b: Rational,
+    var: &str,
+) -> Option<Expr> {
+    let (q_pos, q_neg, d) = palindromic_quartic_factors(&a, &b)?;
+    let one = QuadExt::one(&d);
     let x_poly = QuadPoly::from_coeffs(vec![QuadExt::zero(&d), one.clone()]);
 
     let basis = vec![
@@ -1321,31 +1488,29 @@ fn integrate_x4_plus_one(numerator: &Poly, var: &str) -> Option<Expr> {
     Some(simplify(sum_exprs(terms)))
 }
 
-fn integrate_x5_plus_one(numerator: &Poly, var: &str) -> Option<Expr> {
-    let d = Rational::from_integer(5.into());
-    let sqrt = QuadExt::new(Rational::zero(), Rational::one(), d.clone());
+fn integrate_palindromic_quintic(
+    numerator: &Poly,
+    a: Rational,
+    b: Rational,
+    var: &str,
+) -> Option<Expr> {
+    let c = a.clone() - Rational::one();
+    let d_coeff = b.clone() - a + Rational::one();
+    let (q_pos, q_neg, d) = palindromic_quartic_factors(&c, &d_coeff)?;
     let one = QuadExt::one(&d);
-    let two = QuadExt::from_rational(Rational::from_integer(2.into()), &d);
-
-    let neg_one = QuadExt::from_rational(Rational::from_integer((-1).into()), &d);
-    let a = (neg_one.clone() - sqrt.clone()) / two.clone();
-    let b = (neg_one + sqrt.clone()) / two;
-
-    let q_a = QuadPoly::from_coeffs(vec![one.clone(), a, one.clone()]);
-    let q_b = QuadPoly::from_coeffs(vec![one.clone(), b, one.clone()]);
     let x_poly = QuadPoly::from_coeffs(vec![QuadExt::zero(&d), one.clone()]);
     let linear = QuadPoly::from_coeffs(vec![one.clone(), one.clone()]);
 
-    let term_linear = q_a.mul(&q_b, &d);
-    let term_q_a = linear.mul(&q_b, &d);
-    let term_q_b = linear.mul(&q_a, &d);
+    let term_linear = q_pos.mul(&q_neg, &d);
+    let term_q_pos = linear.mul(&q_neg, &d);
+    let term_q_neg = linear.mul(&q_pos, &d);
 
     let basis = vec![
         term_linear,
-        term_q_a.mul(&x_poly, &d),
-        term_q_a,
-        term_q_b.mul(&x_poly, &d),
-        term_q_b,
+        term_q_pos.mul(&x_poly, &d),
+        term_q_pos,
+        term_q_neg.mul(&x_poly, &d),
+        term_q_neg,
     ];
 
     let degree = 5;
@@ -1387,7 +1552,7 @@ fn integrate_x5_plus_one(numerator: &Poly, var: &str) -> Option<Expr> {
     let term = integrate_quadratic_term_quad(
         solution[1].clone(),
         solution[2].clone(),
-        &q_a,
+        &q_pos,
         var,
         &d,
     )?;
@@ -1395,7 +1560,7 @@ fn integrate_x5_plus_one(numerator: &Poly, var: &str) -> Option<Expr> {
     let term = integrate_quadratic_term_quad(
         solution[3].clone(),
         solution[4].clone(),
-        &q_b,
+        &q_neg,
         var,
         &d,
     )?;
@@ -1439,20 +1604,20 @@ fn integrate_quadratic_term_quad(
             delta.to_expr().boxed(),
             Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
         );
-        let leading = Expr::Div(
-            Expr::Constant(Rational::from_integer(2.into())).boxed(),
-            sqrt_delta.clone().boxed(),
-        );
+        let sqrt_delta_for_atan = sqrt_delta.clone();
         let deriv_expr = Expr::Add(
-            Expr::Mul((two * a).to_expr().boxed(), Expr::Variable(var.to_string()).boxed()).boxed(),
+            Expr::Mul(
+                (two.clone() * a).to_expr().boxed(),
+                Expr::Variable(var.to_string()).boxed(),
+            )
+            .boxed(),
             b.to_expr().boxed(),
         );
-        let atan_arg = Expr::Div(deriv_expr.boxed(), sqrt_delta.boxed());
+        let atan_arg = Expr::Div(deriv_expr.boxed(), sqrt_delta_for_atan.boxed());
         let atan_expr = Expr::Atan(atan_arg.boxed());
-        parts.push(Expr::Mul(
-            beta.to_expr().boxed(),
-            Expr::Mul(leading.boxed(), atan_expr.boxed()).boxed(),
-        ));
+        let beta_scaled = beta * two;
+        let coeff = Expr::Div(beta_scaled.to_expr().boxed(), sqrt_delta.boxed());
+        parts.push(Expr::Mul(coeff.boxed(), atan_expr.boxed()));
     }
 
     Some(simplify(sum_exprs(parts)))

@@ -2,7 +2,11 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::core::expr::{Expr, Rational};
 use crate::core::polynomial::Poly;
-use crate::simplify::{simplify_add, simplify_fully, simplify_mul, simplify_neg, simplify_pow, simplify_sub};
+use crate::simplify::{
+    simplify_add, simplify_div, simplify_fully, simplify_mul, simplify_neg, simplify_pow,
+    simplify_sub,
+};
+use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 const NORMALIZE_SIZE_LIMIT: usize = 160;
@@ -21,6 +25,21 @@ pub fn normalize(expr: Expr) -> Expr {
 pub fn normalize_with_limit(expr: Expr, size_limit: usize) -> Expr {
     let simplified = simplify_fully(expr);
     normalize_once(simplified, size_limit)
+}
+
+pub fn normalize_for_risch(expr: Expr, var: &str) -> Expr {
+    normalize_for_risch_with_limit(expr, var, NORMALIZE_SIZE_LIMIT)
+}
+
+fn normalize_for_risch_with_limit(expr: Expr, var: &str, size_limit: usize) -> Expr {
+    let normalized = normalize_with_limit(expr, size_limit);
+    if expr_size(&normalized) > size_limit {
+        return normalized;
+    }
+    let hyper_expanded = rewrite_hyperbolic_to_exp(normalized, var, size_limit);
+    let context = exp_rewrite_context(&hyper_expanded, var);
+    let rewritten = rewrite_exp_coefficients(hyper_expanded, var, context.as_ref(), size_limit);
+    normalize_once(rewritten, size_limit)
 }
 
 fn normalize_once(expr: Expr, size_limit: usize) -> Expr {
@@ -206,6 +225,313 @@ fn normalize_pow_form(base: Expr, exp: Expr, size_limit: usize) -> Expr {
     }
 
     simplify_pow(base_norm, exp_norm)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ExpLinearKey {
+    coeff: Rational,
+    constant: Rational,
+}
+
+#[derive(Clone, Debug)]
+struct ExpRewriteContext {
+    base_coeff: Rational,
+}
+
+fn exp_rewrite_context(expr: &Expr, var: &str) -> Option<ExpRewriteContext> {
+    let mut forms = BTreeSet::new();
+    collect_exp_linear_forms(expr, var, &mut forms);
+    if forms.len() <= 1 {
+        return None;
+    }
+    let coeffs: Vec<Rational> = forms.into_iter().map(|f| f.coeff).collect();
+    let base_coeff = rational_gcd(&coeffs)?;
+    if base_coeff.is_zero() {
+        None
+    } else {
+        Some(ExpRewriteContext { base_coeff })
+    }
+}
+
+fn collect_exp_linear_forms(expr: &Expr, var: &str, out: &mut BTreeSet<ExpLinearKey>) {
+    match expr {
+        Expr::Exp(inner) => {
+            if let Some(form) = linear_form(inner) {
+                if form.var.as_deref() == Some(var) && !form.coeff.is_zero() {
+                    out.insert(ExpLinearKey {
+                        coeff: form.coeff.clone(),
+                        constant: form.constant.clone(),
+                    });
+                }
+            }
+            collect_exp_linear_forms(inner, var, out);
+        }
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b)
+        | Expr::Pow(a, b) => {
+            collect_exp_linear_forms(a, var, out);
+            collect_exp_linear_forms(b, var, out);
+        }
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Log(inner)
+        | Expr::Abs(inner) => collect_exp_linear_forms(inner, var, out),
+        Expr::Variable(_) | Expr::Constant(_) => {}
+    }
+}
+
+fn rewrite_hyperbolic_to_exp(expr: Expr, var: &str, size_limit: usize) -> Expr {
+    if expr_size(&expr) > size_limit {
+        return expr;
+    }
+    match expr {
+        Expr::Sinh(inner) => {
+            let inner = rewrite_hyperbolic_to_exp(*inner, var, size_limit);
+            if !contains_var(&inner, var) {
+                return Expr::Sinh(inner.boxed());
+            }
+            let exp_pos = Expr::Exp(inner.clone().boxed());
+            let exp_neg = Expr::Exp(Expr::Neg(inner.clone().boxed()).boxed());
+            let diff = simplify_sub(exp_pos, exp_neg);
+            let half = Expr::Constant(Rational::new(1.into(), 2.into()));
+            let expanded = simplify_mul(half, diff);
+            if expr_size(&expanded) > size_limit {
+                Expr::Sinh(inner.boxed())
+            } else {
+                expanded
+            }
+        }
+        Expr::Cosh(inner) => {
+            let inner = rewrite_hyperbolic_to_exp(*inner, var, size_limit);
+            if !contains_var(&inner, var) {
+                return Expr::Cosh(inner.boxed());
+            }
+            let exp_pos = Expr::Exp(inner.clone().boxed());
+            let exp_neg = Expr::Exp(Expr::Neg(inner.clone().boxed()).boxed());
+            let sum = simplify_add(exp_pos, exp_neg);
+            let half = Expr::Constant(Rational::new(1.into(), 2.into()));
+            let expanded = simplify_mul(half, sum);
+            if expr_size(&expanded) > size_limit {
+                Expr::Cosh(inner.boxed())
+            } else {
+                expanded
+            }
+        }
+        Expr::Tanh(inner) => {
+            let inner = rewrite_hyperbolic_to_exp(*inner, var, size_limit);
+            if !contains_var(&inner, var) {
+                return Expr::Tanh(inner.boxed());
+            }
+            let exp_pos = Expr::Exp(inner.clone().boxed());
+            let exp_neg = Expr::Exp(Expr::Neg(inner.clone().boxed()).boxed());
+            let diff = simplify_sub(exp_pos.clone(), exp_neg.clone());
+            let sum = simplify_add(exp_pos, exp_neg);
+            let expanded = simplify_div(diff, sum);
+            if expr_size(&expanded) > size_limit {
+                Expr::Tanh(inner.boxed())
+            } else {
+                expanded
+            }
+        }
+        Expr::Add(a, b) => Expr::Add(
+            rewrite_hyperbolic_to_exp(*a, var, size_limit).boxed(),
+            rewrite_hyperbolic_to_exp(*b, var, size_limit).boxed(),
+        ),
+        Expr::Sub(a, b) => Expr::Sub(
+            rewrite_hyperbolic_to_exp(*a, var, size_limit).boxed(),
+            rewrite_hyperbolic_to_exp(*b, var, size_limit).boxed(),
+        ),
+        Expr::Mul(a, b) => Expr::Mul(
+            rewrite_hyperbolic_to_exp(*a, var, size_limit).boxed(),
+            rewrite_hyperbolic_to_exp(*b, var, size_limit).boxed(),
+        ),
+        Expr::Div(a, b) => Expr::Div(
+            rewrite_hyperbolic_to_exp(*a, var, size_limit).boxed(),
+            rewrite_hyperbolic_to_exp(*b, var, size_limit).boxed(),
+        ),
+        Expr::Pow(a, b) => Expr::Pow(
+            rewrite_hyperbolic_to_exp(*a, var, size_limit).boxed(),
+            rewrite_hyperbolic_to_exp(*b, var, size_limit).boxed(),
+        ),
+        Expr::Neg(inner) => Expr::Neg(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Sin(inner) => Expr::Sin(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Cos(inner) => Expr::Cos(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Tan(inner) => Expr::Tan(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Sec(inner) => Expr::Sec(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Csc(inner) => Expr::Csc(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Cot(inner) => Expr::Cot(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Atan(inner) => Expr::Atan(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Asin(inner) => Expr::Asin(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Acos(inner) => Expr::Acos(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Asec(inner) => Expr::Asec(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Acsc(inner) => Expr::Acsc(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Acot(inner) => Expr::Acot(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Asinh(inner) => Expr::Asinh(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Acosh(inner) => Expr::Acosh(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Atanh(inner) => Expr::Atanh(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Exp(inner) => Expr::Exp(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Log(inner) => Expr::Log(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        Expr::Abs(inner) => Expr::Abs(rewrite_hyperbolic_to_exp(*inner, var, size_limit).boxed()),
+        other => other,
+    }
+}
+
+fn rewrite_exp_coefficients(
+    expr: Expr,
+    var: &str,
+    context: Option<&ExpRewriteContext>,
+    size_limit: usize,
+) -> Expr {
+    if expr_size(&expr) > size_limit {
+        return expr;
+    }
+    let Some(context) = context else {
+        return expr;
+    };
+
+    match expr {
+        Expr::Exp(inner) => {
+            let inner = rewrite_exp_coefficients(*inner, var, Some(context), size_limit);
+            if let Some(form) = linear_form(&inner) {
+                if form.var.as_deref() == Some(var) && !form.coeff.is_zero() {
+                    let ratio = form.coeff.clone() / context.base_coeff.clone();
+                    if ratio.is_integer() {
+                        let exponent = ratio.to_integer();
+                        let base_arg = if context.base_coeff == Rational::one() {
+                            Expr::Variable(var.to_string())
+                        } else {
+                            simplify_mul(
+                                Expr::Constant(context.base_coeff.clone()),
+                                Expr::Variable(var.to_string()),
+                            )
+                        };
+                        let base_exp = Expr::Exp(base_arg.boxed());
+                        let pow = if exponent == 1.into() {
+                            base_exp
+                        } else {
+                            simplify_pow(
+                                base_exp,
+                                Expr::Constant(Rational::from_integer(exponent)),
+                            )
+                        };
+                        let result = if form.constant.is_zero() {
+                            pow
+                        } else {
+                            let exp_const = Expr::Exp(Expr::Constant(form.constant).boxed());
+                            simplify_mul(exp_const, pow)
+                        };
+                        if expr_size(&result) <= size_limit {
+                            return result;
+                        }
+                    }
+                }
+            }
+            Expr::Exp(inner.boxed())
+        }
+        Expr::Add(a, b) => Expr::Add(
+            rewrite_exp_coefficients(*a, var, Some(context), size_limit).boxed(),
+            rewrite_exp_coefficients(*b, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Sub(a, b) => Expr::Sub(
+            rewrite_exp_coefficients(*a, var, Some(context), size_limit).boxed(),
+            rewrite_exp_coefficients(*b, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Mul(a, b) => Expr::Mul(
+            rewrite_exp_coefficients(*a, var, Some(context), size_limit).boxed(),
+            rewrite_exp_coefficients(*b, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Div(a, b) => Expr::Div(
+            rewrite_exp_coefficients(*a, var, Some(context), size_limit).boxed(),
+            rewrite_exp_coefficients(*b, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Pow(a, b) => Expr::Pow(
+            rewrite_exp_coefficients(*a, var, Some(context), size_limit).boxed(),
+            rewrite_exp_coefficients(*b, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Neg(inner) => Expr::Neg(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Sin(inner) => Expr::Sin(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Cos(inner) => Expr::Cos(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Tan(inner) => Expr::Tan(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Sec(inner) => Expr::Sec(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Csc(inner) => Expr::Csc(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Cot(inner) => Expr::Cot(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Atan(inner) => Expr::Atan(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Asin(inner) => Expr::Asin(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Acos(inner) => Expr::Acos(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Asec(inner) => Expr::Asec(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Acsc(inner) => Expr::Acsc(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Acot(inner) => Expr::Acot(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Sinh(inner) => Expr::Sinh(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Cosh(inner) => Expr::Cosh(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Tanh(inner) => Expr::Tanh(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Asinh(inner) => Expr::Asinh(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Acosh(inner) => Expr::Acosh(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Atanh(inner) => Expr::Atanh(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Log(inner) => Expr::Log(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Abs(inner) => Expr::Abs(
+            rewrite_exp_coefficients(*inner, var, Some(context), size_limit).boxed(),
+        ),
+        Expr::Variable(_) | Expr::Constant(_) => expr,
+    }
 }
 
 fn normalize_linear_arg(arg: Expr, size_limit: usize) -> Expr {
@@ -510,6 +836,32 @@ fn pow_rational(base: &Rational, exp: &Rational) -> Rational {
     base.clone()
 }
 
+fn rational_gcd(coeffs: &[Rational]) -> Option<Rational> {
+    let mut num_gcd: Option<num_bigint::BigInt> = None;
+    let mut den_lcm: Option<num_bigint::BigInt> = None;
+    for coeff in coeffs {
+        if coeff.is_zero() {
+            continue;
+        }
+        let num = coeff.numer().clone().abs();
+        let den = coeff.denom().clone();
+        num_gcd = Some(match num_gcd {
+            Some(prev) => prev.gcd(&num),
+            None => num,
+        });
+        den_lcm = Some(match den_lcm {
+            Some(prev) => prev.lcm(&den),
+            None => den,
+        });
+    }
+    let num = num_gcd?;
+    if num.is_zero() {
+        return None;
+    }
+    let den = den_lcm.unwrap_or_else(|| 1.into());
+    Some(Rational::new(num, den))
+}
+
 fn expr_size(expr: &Expr) -> usize {
     match expr {
         Expr::Variable(_) | Expr::Constant(_) => 1,
@@ -540,6 +892,40 @@ fn expr_size(expr: &Expr) -> usize {
         | Expr::Mul(a, b)
         | Expr::Div(a, b)
         | Expr::Pow(a, b) => 1 + expr_size(a) + expr_size(b),
+    }
+}
+
+fn contains_var(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Variable(v) => v == var,
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b)
+        | Expr::Pow(a, b) => contains_var(a, var) || contains_var(b, var),
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Exp(inner)
+        | Expr::Log(inner)
+        | Expr::Abs(inner) => contains_var(inner, var),
+        Expr::Constant(_) => false,
     }
 }
 

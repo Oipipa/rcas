@@ -335,6 +335,74 @@ fn assert_numeric_roundtrip(input: &str, samples: &[f64]) {
     }
 }
 
+fn assert_risch_lite_roundtrip(input: &str, samples: &[f64]) {
+    let expr = parse_expr(input).expect("parse risch-lite roundtrip input");
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            let attempt = report
+                .attempts
+                .iter()
+                .find(|a| a.strategy == Strategy::RischLite)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "risch-lite attempt missing for {input}: attempts={:?}",
+                        report.attempts
+                    )
+                });
+            assert!(
+                matches!(attempt.status, AttemptStatus::Succeeded),
+                "risch-lite should succeed for {input}"
+            );
+            let derivative = simplify_fully(differentiate("x", &result));
+            let target = simplify_fully(expr);
+            for &sample in samples {
+                let lhs = eval_expr_f64(&derivative, "x", sample);
+                let rhs = eval_expr_f64(&target, "x", sample);
+                let delta = (lhs - rhs).abs();
+                assert!(
+                    delta < 1e-6,
+                    "risch-lite roundtrip failure for {input} at x={sample}: {delta}"
+                );
+            }
+        }
+        other => panic!("expected risch-lite integration for {input}, got {other:?}"),
+    }
+}
+
+fn assert_risch_roundtrip(input: &str, samples: &[f64]) {
+    let expr = parse_expr(input).expect("parse risch roundtrip input");
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            let attempt = report
+                .attempts
+                .iter()
+                .find(|a| a.strategy == Strategy::Risch)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "risch attempt missing for {input}: attempts={:?}",
+                        report.attempts
+                    )
+                });
+            assert!(
+                matches!(attempt.status, AttemptStatus::Succeeded),
+                "risch should succeed for {input}"
+            );
+            let derivative = simplify_fully(differentiate("x", &result));
+            let target = simplify_fully(expr);
+            for &sample in samples {
+                let lhs = eval_expr_f64(&derivative, "x", sample);
+                let rhs = eval_expr_f64(&target, "x", sample);
+                let delta = (lhs - rhs).abs();
+                assert!(
+                    delta < 1e-6,
+                    "risch roundtrip failure for {input} at x={sample}: {delta}"
+                );
+            }
+        }
+        other => panic!("expected risch integration for {input}, got {other:?}"),
+    }
+}
+
 fn assert_integral_with_var(var: &str, input: &str, expected: &str) {
     let expr = parse_expr(input).expect("parse expected integral input");
     let expected_expr = simplify_parse(expected);
@@ -527,7 +595,12 @@ fn assert_risch_lite_integral(input: &str, expected: &str) {
                 .attempts
                 .iter()
                 .find(|a| a.strategy == Strategy::RischLite)
-                .expect("risch-lite attempt");
+                .unwrap_or_else(|| {
+                    panic!(
+                        "risch-lite attempt missing for {input}: attempts={:?}",
+                        report.attempts
+                    )
+                });
             assert_eq!(
                 attempt.status,
                 AttemptStatus::Succeeded,
@@ -1461,6 +1534,22 @@ fn rational_cyclotomic_roundtrip_suite() {
 }
 
 #[test]
+fn rational_palindromic_roundtrip_suite() {
+    let samples = vec![-2.0, -1.5, -0.5, 0.5, 1.5];
+    let cases = vec![
+        "1/(x^4-x^2+1)",
+        "1/(x^4+x^3+x^2+x+1)",
+        "1/(x^5+x^4-x^3-x^2+x+1)",
+        "1/(x^6+1)",
+    ];
+
+    assert_eq!(cases.len(), 4, "expected 4 palindromic cases");
+    for input in cases {
+        assert_rational_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn rational_rothstein_trager_roundtrip_suite() {
     let cases: Vec<(&str, Vec<f64>)> = vec![
         ("(3*x^2 + 1)/(x^3 + x + 1)", vec![0.2, 0.8, 1.4]),
@@ -1526,6 +1615,17 @@ fn risch_exp_log_tower_suite() {
     assert_eq!(cases.len(), 5, "expected 5 exp/log tower cases");
     for input in cases {
         assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn risch_algebraic_substitution_suite() {
+    let samples = vec![0.2, 0.6, 1.1, 1.7];
+    let cases = vec!["1/(x^(1/3) + 1)"];
+
+    assert_eq!(cases.len(), 1, "expected 1 algebraic substitution case");
+    for input in cases {
+        assert_risch_roundtrip(input, &samples);
     }
 }
 
@@ -1883,6 +1983,16 @@ fn risch_lite_trivial_suite() {
     assert_eq!(cases.len(), 23, "expected 23 trivial risch-lite cases");
     for (input, expected) in cases {
         assert_risch_lite_integral(input, expected);
+    }
+}
+
+#[test]
+fn risch_lite_exp_generator_unification() {
+    let samples = vec![0.2, 0.6, 1.1, 1.7];
+    let cases = vec!["1/(1+exp(x)*exp(2*x))"];
+    assert_eq!(cases.len(), 1, "expected 1 exp unification case");
+    for input in cases {
+        assert_risch_lite_roundtrip(input, &samples);
     }
 }
 
@@ -2395,6 +2505,12 @@ fn trig_exp_log_nontrivial_suite() {
         ("exp(1/2*x)*cos(1/2*x)", vec![-0.5, 0.0, 0.5]),
         ("exp(3*x - 1)*sin(4*x)", vec![-0.5, 0.0, 0.5]),
         ("exp(3*x - 1)*cos(4*x)", vec![-0.5, 0.0, 0.5]),
+        ("x*exp(x)*sin(2*x)", vec![-0.5, 0.0, 0.5]),
+        ("x^2*exp(-x)*cos(3*x)", vec![-0.5, 0.0, 0.5]),
+        ("x*exp(2*x + 1)*cos(2*x - 1)", vec![-0.3, 0.0, 0.3]),
+        ("x^2*exp(3/2*x)*sin(1/2*x + 1)", vec![-0.5, 0.0, 0.5]),
+        ("x*exp(x)*sinh(2*x)", vec![-0.3, 0.0, 0.3]),
+        ("x*exp(x)*cosh(x)", vec![-0.3, 0.0, 0.3]),
         ("arcsin(1/2*x + 1/5)", vec![-0.4, 0.0, 0.4]),
         ("arccos(1/2*x - 1/10)", vec![-1.0, 0.0, 1.0]),
         ("arctan(3*x - 1)", vec![-0.5, 0.0, 0.5]),
@@ -2420,7 +2536,7 @@ fn trig_exp_log_nontrivial_suite() {
         ("arccot(2*x + 1)", vec![-0.5, 0.0, 0.5]),
     ];
 
-    assert_eq!(cases.len(), 41, "expected 41 non-trivial trig/exp/log cases");
+    assert_eq!(cases.len(), 47, "expected 47 non-trivial trig/exp/log cases");
     for (input, samples) in cases {
         assert_numeric_roundtrip(input, &samples);
     }

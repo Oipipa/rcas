@@ -1,10 +1,15 @@
 use rcas::expr::Expr;
 use rcas::parse_expr;
-use rcas::simplify::{normalize, simplify_fully};
+use rcas::simplify::{normalize, normalize_for_risch, simplify_fully};
 
 fn normalized(input: &str) -> Expr {
     let expr = parse_expr(input).expect("parse input");
     simplify_fully(normalize(expr))
+}
+
+fn normalized_risch(input: &str) -> Expr {
+    let expr = parse_expr(input).expect("parse input");
+    simplify_fully(normalize_for_risch(expr, "x"))
 }
 
 fn expect_normalized(input: &str, expected: &str) {
@@ -13,6 +18,15 @@ fn expect_normalized(input: &str, expected: &str) {
     assert_eq!(
         actual, expected_expr,
         "normalization mismatch for {input}: got {actual:?}, expected {expected_expr:?}"
+    );
+}
+
+fn expect_risch_normalized(input: &str, expected: &str) {
+    let actual = normalized_risch(input);
+    let expected_expr = normalized_risch(expected);
+    assert_eq!(
+        actual, expected_expr,
+        "risch normalization mismatch for {input}: got {actual:?}, expected {expected_expr:?}"
     );
 }
 
@@ -145,4 +159,19 @@ fn canonicalization_nontrivial_cases() {
 #[test]
 fn fractional_nested_power_not_collapsed() {
     expect_normalized("(x^2)^(1/2)", "(x^2)^(1/2)");
+}
+
+#[test]
+fn risch_exp_generator_rewrite_cases() {
+    let cases = vec![
+        ("exp(2*x)", "exp(2*x)"),
+        ("exp(x)*exp(2*x)", "exp(x)^3"),
+        ("sinh(x)", "1/2*(exp(x) - exp(x)^-1)"),
+        ("cosh(2*x)", "1/2*(exp(2*x) + exp(2*x)^-1)"),
+    ];
+
+    assert_eq!(cases.len(), 4, "expected 4 risch normalization cases");
+    for (input, expected) in cases {
+        expect_risch_normalized(input, expected);
+    }
 }

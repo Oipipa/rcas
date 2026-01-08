@@ -1,4 +1,4 @@
-use num_traits::One;
+use num_traits::{One, Zero};
 
 use crate::calculus::differentiate;
 use crate::calculus::integrate::{
@@ -58,14 +58,14 @@ pub(super) fn integrate_in_tower(expr: &Expr, var: &str, tower: &Tower) -> Optio
         let integrand_t = match generator.kind {
             GeneratorKind::Exp => {
                 let denom = Expr::Mul(generator.arg_deriv.clone().boxed(), t_var.clone().boxed());
-                cancel_common_factors(replaced, denom)
+                cancel_common_factors(replaced, denom, var)
             }
             GeneratorKind::Log => {
                 let scale = Expr::Div(
                     generator.arg_deriv.clone().boxed(),
                     generator.arg.clone().boxed(),
                 );
-                cancel_common_factors(replaced, scale)
+                cancel_common_factors(replaced, scale, var)
             }
         };
 
@@ -90,21 +90,138 @@ pub(super) fn integrate_in_tower(expr: &Expr, var: &str, tower: &Tower) -> Optio
     None
 }
 
-fn cancel_common_factors(numer: Expr, denom: Expr) -> Expr {
-    let (c_num, mut f_num) = flatten_product(&numer);
+fn cancel_common_factors(numer: Expr, denom: Expr, var: &str) -> Expr {
+    let mut numer = numer;
+    let (mut c_num, mut f_num) = flatten_product(&numer);
     let (c_den, mut f_den) = flatten_product(&denom);
+    if matches!(numer, Expr::Add(_, _) | Expr::Sub(_, _) | Expr::Neg(_)) && !f_den.is_empty() {
+        let (factored, remaining_den) = factor_sum_common_factors(numer, &f_den, var);
+        if remaining_den.len() != f_den.len() {
+            numer = factored;
+            f_den = remaining_den;
+            let (c_next, f_next) = flatten_product(&numer);
+            c_num = c_next;
+            f_num = f_next;
+        }
+    }
     let mut i = 0;
     while i < f_den.len() {
         if let Some(pos) = f_num.iter().position(|f| f == &f_den[i]) {
             f_num.remove(pos);
             f_den.remove(i);
         } else {
-            i += 1;
+            let mut matched = None;
+            for (idx, factor) in f_num.iter().enumerate() {
+                if let Some(ratio) = constant_ratio(factor, &f_den[i], var) {
+                    matched = Some((idx, ratio));
+                    break;
+                }
+            }
+            if let Some((idx, ratio)) = matched {
+                f_num.remove(idx);
+                match ratio {
+                    Expr::Constant(c) => {
+                        c_num *= c;
+                    }
+                    _ => f_num.push(ratio),
+                }
+                f_den.remove(i);
+            } else {
+                i += 1;
+            }
         }
     }
     let num_expr = rebuild_product(c_num, f_num);
     let den_expr = rebuild_product(c_den, f_den);
     Expr::Div(num_expr.boxed(), den_expr.boxed())
+}
+
+fn factor_sum_common_factors(numer: Expr, den_factors: &[Expr], var: &str) -> (Expr, Vec<Expr>) {
+    let terms = flatten_sum_terms(&numer);
+    let mut term_parts: Vec<(Rational, Vec<Expr>)> =
+        terms.iter().map(|term| flatten_product(term)).collect();
+    let mut remaining_den = den_factors.to_vec();
+
+    let mut idx = 0;
+    while idx < remaining_den.len() {
+        let factor = &remaining_den[idx];
+        let all_have = term_parts.iter().all(|(c, factors)| {
+            if c.is_zero() {
+                true
+            } else if factors.iter().any(|f| f == factor) {
+                true
+            } else {
+                factors
+                    .iter()
+                    .any(|f| constant_ratio(f, factor, var).is_some())
+            }
+        });
+        if all_have {
+            for (c, factors) in term_parts.iter_mut() {
+                if c.is_zero() {
+                    continue;
+                }
+                if let Some(pos) = factors.iter().position(|f| f == factor) {
+                    factors.remove(pos);
+                    continue;
+                }
+                if let Some((pos, ratio)) = factors
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, f)| constant_ratio(f, factor, var).map(|r| (i, r)))
+                {
+                    factors.remove(pos);
+                    match ratio {
+                        Expr::Constant(k) => {
+                            *c *= k;
+                        }
+                        _ => factors.push(ratio),
+                    }
+                }
+            }
+            remaining_den.remove(idx);
+        } else {
+            idx += 1;
+        }
+    }
+
+    let rebuilt_terms: Vec<Expr> = term_parts
+        .into_iter()
+        .map(|(c, factors)| rebuild_product(c, factors))
+        .collect();
+    (rebuild_sum(rebuilt_terms), remaining_den)
+}
+
+fn flatten_sum_terms(expr: &Expr) -> Vec<Expr> {
+    match expr {
+        Expr::Add(a, b) => {
+            let mut out = flatten_sum_terms(a);
+            out.extend(flatten_sum_terms(b));
+            out
+        }
+        Expr::Sub(a, b) => {
+            let mut out = flatten_sum_terms(a);
+            out.extend(
+                flatten_sum_terms(b)
+                    .into_iter()
+                    .map(|term| Expr::Neg(term.boxed())),
+            );
+            out
+        }
+        Expr::Neg(inner) => flatten_sum_terms(inner)
+            .into_iter()
+            .map(|term| Expr::Neg(term.boxed()))
+            .collect(),
+        _ => vec![expr.clone()],
+    }
+}
+
+fn rebuild_sum(terms: Vec<Expr>) -> Expr {
+    let mut iter = terms.into_iter();
+    let Some(first) = iter.next() else {
+        return Expr::Constant(Rational::zero());
+    };
+    iter.fold(first, |acc, term| Expr::Add(acc.boxed(), term.boxed()))
 }
 
 fn normalize_rational_candidate(expr: Expr) -> Expr {
