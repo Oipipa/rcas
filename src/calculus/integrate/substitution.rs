@@ -1,13 +1,16 @@
 use std::collections::HashSet;
 
-use num_traits::{One, Zero};
+use num_bigint::BigInt;
+use num_traits::{One, ToPrimitive, Zero};
 
 use crate::calculus::differentiate;
 use crate::core::expr::{Expr, Rational};
+use crate::core::polynomial::Poly;
 use crate::simplify::{normalize, simplify, simplify_fully, substitute};
 
 use super::limits::{SUBSTITUTION_CANDIDATE_LIMIT, TRANSFORM_SIZE_LIMIT};
 use super::{
+    direct::integrate_basic,
     apply_constant_factor, constant_ratio, contains_var, expr_size, flatten_product, integrate,
     is_constant_wrt, is_zero_expr, log_abs, rebuild_product, split_constant_factors,
     IntegrationResult,
@@ -19,6 +22,9 @@ pub(super) fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> 
         return Some(Expr::Constant(Rational::zero()));
     }
     if let Some(result) = integrate_log_derivative(expr, var) {
+        return Some(result);
+    }
+    if let Some(result) = integrate_quadratic_sqrt_heuristic(expr, var) {
         return Some(result);
     }
 
@@ -86,6 +92,489 @@ pub(super) fn integrate_log_derivative(expr: &Expr, var: &str) -> Option<Expr> {
         return None;
     }
     Some(simplify(Expr::Mul(ratio.boxed(), log_abs(den).boxed())))
+}
+
+fn integrate_quadratic_sqrt_heuristic(expr: &Expr, var: &str) -> Option<Expr> {
+    let (base_expr, base_poly) = find_quadratic_sqrt_base(expr, var)?;
+    let base_norm = normalize(base_expr.clone());
+    if let Some(result) =
+        integrate_quadratic_trig_substitution(expr, var, &base_expr, &base_poly, &base_norm)
+    {
+        return Some(result);
+    }
+    integrate_quadratic_euler_substitution(expr, var, &base_expr, &base_poly, &base_norm)
+}
+
+fn integrate_quadratic_trig_substitution(
+    expr: &Expr,
+    var: &str,
+    _base_expr: &Expr,
+    base_poly: &Poly,
+    base_norm: &Expr,
+) -> Option<Expr> {
+    if base_poly.degree()? != 2 {
+        return None;
+    }
+    let a = base_poly.coeff(2);
+    let b = base_poly.coeff(1);
+    let c = base_poly.coeff(0);
+    if !b.is_zero() || a.is_zero() || c.is_zero() {
+        return None;
+    }
+
+    let u_name = fresh_var_name(expr, var, "u");
+    let u_var = Expr::Variable(u_name.clone());
+    let x_var = Expr::Variable(var.to_string());
+
+    let (x_sub, sqrt_sub, dx_du, u_back) = if a < Rational::zero() && c > Rational::zero() {
+        let scale_sq = c.clone() / (-a.clone());
+        let scale = sqrt_rational_expr(&scale_sq);
+        let x_sub = Expr::Mul(scale.clone().boxed(), Expr::Sin(u_var.clone().boxed()).boxed());
+        let sqrt_c = sqrt_rational_expr(&c);
+        let sqrt_sub = Expr::Mul(sqrt_c.boxed(), Expr::Cos(u_var.clone().boxed()).boxed());
+        let dx_du = Expr::Mul(scale.clone().boxed(), Expr::Cos(u_var.clone().boxed()).boxed());
+        let ratio = Expr::Div(x_var.boxed(), scale.boxed());
+        let u_back = Expr::Asin(ratio.boxed());
+        (x_sub, sqrt_sub, dx_du, u_back)
+    } else if a > Rational::zero() && c > Rational::zero() {
+        let scale_sq = c.clone() / a.clone();
+        let scale = sqrt_rational_expr(&scale_sq);
+        let x_sub = Expr::Mul(scale.clone().boxed(), Expr::Tan(u_var.clone().boxed()).boxed());
+        let sqrt_c = sqrt_rational_expr(&c);
+        let sqrt_sub = Expr::Mul(sqrt_c.boxed(), Expr::Sec(u_var.clone().boxed()).boxed());
+        let sec_sq = Expr::Pow(
+            Expr::Sec(u_var.clone().boxed()).boxed(),
+            Expr::Constant(Rational::from_integer(2.into())).boxed(),
+        );
+        let dx_du = Expr::Mul(scale.clone().boxed(), sec_sq.boxed());
+        let ratio = Expr::Div(x_var.boxed(), scale.boxed());
+        let u_back = Expr::Atan(ratio.boxed());
+        (x_sub, sqrt_sub, dx_du, u_back)
+    } else if a > Rational::zero() && c < Rational::zero() {
+        let scale_sq = (-c.clone()) / a.clone();
+        let scale = sqrt_rational_expr(&scale_sq);
+        let x_sub = Expr::Mul(scale.clone().boxed(), Expr::Sec(u_var.clone().boxed()).boxed());
+        let sqrt_c = sqrt_rational_expr(&(-c));
+        let sqrt_sub = Expr::Mul(sqrt_c.boxed(), Expr::Tan(u_var.clone().boxed()).boxed());
+        let dx_du = Expr::Mul(
+            scale.clone().boxed(),
+            Expr::Mul(
+                Expr::Sec(u_var.clone().boxed()).boxed(),
+                Expr::Tan(u_var.clone().boxed()).boxed(),
+            )
+            .boxed(),
+        );
+        let ratio = Expr::Div(x_var.boxed(), scale.boxed());
+        let u_back = Expr::Asec(ratio.boxed());
+        (x_sub, sqrt_sub, dx_du, u_back)
+    } else {
+        return None;
+    };
+
+    integrate_quadratic_sqrt_substitution(
+        expr,
+        var,
+        base_norm,
+        &sqrt_sub,
+        &u_name,
+        &x_sub,
+        &dx_du,
+        &u_back,
+    )
+}
+
+fn integrate_quadratic_euler_substitution(
+    expr: &Expr,
+    var: &str,
+    base_expr: &Expr,
+    base_poly: &Poly,
+    base_norm: &Expr,
+) -> Option<Expr> {
+    if base_poly.degree()? != 2 {
+        return None;
+    }
+    let a = base_poly.coeff(2);
+    if a.is_zero() {
+        return None;
+    }
+    let b = base_poly.coeff(1);
+    let c = base_poly.coeff(0);
+    let t_name = fresh_var_name(expr, var, "t");
+    let t_var = Expr::Variable(t_name.clone());
+    let x_var = Expr::Variable(var.to_string());
+    let two = Rational::from_integer(2.into());
+    let half = Rational::new(1.into(), 2.into());
+    let sqrt_base = Expr::Pow(base_expr.clone().boxed(), Expr::Constant(half).boxed());
+
+    let (x_sub, sqrt_sub, dx_dt, t_back) = if a > Rational::zero() {
+        let sqrt_a = sqrt_rational_expr(&a);
+        let denom = Expr::Sub(
+            Expr::Constant(b.clone()).boxed(),
+            Expr::Mul(
+                Expr::Constant(two.clone()).boxed(),
+                Expr::Mul(sqrt_a.clone().boxed(), t_var.clone().boxed()).boxed(),
+            )
+            .boxed(),
+        );
+        let t_sq = Expr::Pow(t_var.clone().boxed(), Expr::integer(2).boxed());
+        let num = Expr::Sub(t_sq.clone().boxed(), Expr::Constant(c.clone()).boxed());
+        let x_sub = Expr::Div(num.clone().boxed(), denom.clone().boxed());
+        let sqrt_sub = Expr::Add(
+            Expr::Mul(sqrt_a.clone().boxed(), x_sub.clone().boxed()).boxed(),
+            t_var.clone().boxed(),
+        );
+        let t_denom = Expr::Mul(t_var.clone().boxed(), denom.clone().boxed());
+        let s_num = Expr::Mul(sqrt_a.clone().boxed(), num.clone().boxed());
+        let sum = Expr::Add(t_denom.boxed(), s_num.boxed());
+        let dx_dt = Expr::Div(
+            Expr::Mul(Expr::Constant(two.clone()).boxed(), sum.boxed()).boxed(),
+            Expr::Pow(denom.boxed(), Expr::integer(2).boxed()).boxed(),
+        );
+        let t_back = Expr::Sub(
+            sqrt_base.boxed(),
+            Expr::Mul(sqrt_a.boxed(), x_var.boxed()).boxed(),
+        );
+        (x_sub, sqrt_sub, dx_dt, t_back)
+    } else if c > Rational::zero() {
+        let sqrt_c = sqrt_rational_expr(&c);
+        let t_sq = Expr::Pow(t_var.clone().boxed(), Expr::integer(2).boxed());
+        let denom = Expr::Sub(Expr::Constant(a.clone()).boxed(), t_sq.clone().boxed());
+        let num = Expr::Sub(
+            Expr::Mul(Expr::Constant(two.clone()).boxed(), Expr::Mul(sqrt_c.clone().boxed(), t_var.clone().boxed()).boxed()).boxed(),
+            Expr::Constant(b.clone()).boxed(),
+        );
+        let x_sub = Expr::Div(num.clone().boxed(), denom.clone().boxed());
+        let sqrt_sub = Expr::Add(
+            Expr::Mul(t_var.clone().boxed(), x_sub.clone().boxed()).boxed(),
+            sqrt_c.clone().boxed(),
+        );
+        let r_denom = Expr::Mul(sqrt_c.clone().boxed(), denom.clone().boxed());
+        let t_num = Expr::Mul(t_var.clone().boxed(), num.clone().boxed());
+        let sum = Expr::Add(r_denom.boxed(), t_num.boxed());
+        let dx_dt = Expr::Div(
+            Expr::Mul(Expr::Constant(two.clone()).boxed(), sum.boxed()).boxed(),
+            Expr::Pow(denom.boxed(), Expr::integer(2).boxed()).boxed(),
+        );
+        let t_back = Expr::Div(
+            Expr::Sub(sqrt_base.boxed(), sqrt_c.boxed()).boxed(),
+            x_var.boxed(),
+        );
+        (x_sub, sqrt_sub, dx_dt, t_back)
+    } else {
+        let four = Rational::from_integer(4.into());
+        let delta = b.clone() * b.clone() - four * a.clone() * c.clone();
+        if delta <= Rational::zero() {
+            return None;
+        }
+        let sqrt_delta = sqrt_rational_expr(&delta);
+        let two_a = Rational::from_integer(2.into()) * a.clone();
+        let r1 = Expr::Div(
+            Expr::Sub(
+                Expr::Constant(-b.clone()).boxed(),
+                sqrt_delta.clone().boxed(),
+            )
+            .boxed(),
+            Expr::Constant(two_a.clone()).boxed(),
+        );
+        let r2 = Expr::Div(
+            Expr::Add(
+                Expr::Constant(-b.clone()).boxed(),
+                sqrt_delta.clone().boxed(),
+            )
+            .boxed(),
+            Expr::Constant(two_a.clone()).boxed(),
+        );
+        let t_sq = Expr::Pow(t_var.clone().boxed(), Expr::integer(2).boxed());
+        let denom = Expr::Sub(Expr::Constant(a.clone()).boxed(), t_sq.clone().boxed());
+        let num = Expr::Sub(
+            Expr::Mul(Expr::Constant(a.clone()).boxed(), r2.clone().boxed()).boxed(),
+            Expr::Mul(t_sq.boxed(), r1.clone().boxed()).boxed(),
+        );
+        let x_sub = Expr::Div(num.clone().boxed(), denom.clone().boxed());
+        let sqrt_sub = Expr::Mul(
+            t_var.clone().boxed(),
+            Expr::Sub(x_sub.clone().boxed(), r1.clone().boxed()).boxed(),
+        );
+        let dx_dt = Expr::Div(
+            Expr::Mul(
+                Expr::Mul(Expr::Constant(two.clone()).boxed(), t_var.clone().boxed()).boxed(),
+                sqrt_delta.boxed(),
+            )
+            .boxed(),
+            Expr::Pow(denom.boxed(), Expr::integer(2).boxed()).boxed(),
+        );
+        let t_back = Expr::Div(
+            sqrt_base.boxed(),
+            Expr::Sub(x_var.boxed(), r1.boxed()).boxed(),
+        );
+        (x_sub, sqrt_sub, dx_dt, t_back)
+    };
+
+    integrate_quadratic_sqrt_substitution(
+        expr,
+        var,
+        base_norm,
+        &sqrt_sub,
+        &t_name,
+        &x_sub,
+        &dx_dt,
+        &t_back,
+    )
+}
+
+fn integrate_quadratic_sqrt_substitution(
+    expr: &Expr,
+    var: &str,
+    base_norm: &Expr,
+    sqrt_sub: &Expr,
+    sub_name: &str,
+    x_sub: &Expr,
+    dx_dsub: &Expr,
+    back_sub: &Expr,
+) -> Option<Expr> {
+    let rewritten = rewrite_quadratic_sqrt_expr(expr, base_norm, sqrt_sub)?;
+    let substituted = simplify_fully(substitute(&rewritten, var, x_sub));
+    let integrand_sub = simplify_fully(Expr::Mul(substituted.boxed(), dx_dsub.clone().boxed()));
+    if expr_size(&integrand_sub) > TRANSFORM_SIZE_LIMIT {
+        return None;
+    }
+    let result_sub = if let Some(result) = integrate_basic(&integrand_sub, sub_name) {
+        result
+    } else if let Some((num, den)) = rationalize_expr(&integrand_sub, sub_name) {
+        let rational = simplify_fully(Expr::Div(num.boxed(), den.boxed()));
+        integrate_basic(&rational, sub_name)?
+    } else {
+        return None;
+    };
+    let restored = substitute(&result_sub, sub_name, back_sub);
+    Some(simplify(restored))
+}
+
+fn find_quadratic_sqrt_base(expr: &Expr, var: &str) -> Option<(Expr, Poly)> {
+    let mut base = None;
+    if !collect_quadratic_sqrt_base(expr, var, &mut base) {
+        return None;
+    }
+    let base_expr = base?;
+    let base_poly = Poly::from_expr(&base_expr, var)?;
+    if base_poly.degree()? != 2 {
+        return None;
+    }
+    Some((base_expr, base_poly))
+}
+
+fn collect_quadratic_sqrt_base(expr: &Expr, var: &str, base: &mut Option<Expr>) -> bool {
+    match expr {
+        Expr::Pow(base_expr, exp) => {
+            if let Some(exp_const) = extract_rational_const(exp) {
+                if is_half_integer(&exp_const) && contains_var(base_expr, var) {
+                    let norm = normalize((**base_expr).clone());
+                    if let Some(existing) = base {
+                        if normalize(existing.clone()) != norm {
+                            return false;
+                        }
+                    } else {
+                        *base = Some((**base_expr).clone());
+                    }
+                }
+            }
+            collect_quadratic_sqrt_base(base_expr, var, base)
+                && collect_quadratic_sqrt_base(exp, var, base)
+        }
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b) => {
+            collect_quadratic_sqrt_base(a, var, base)
+                && collect_quadratic_sqrt_base(b, var, base)
+        }
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Exp(inner)
+        | Expr::Log(inner)
+        | Expr::Abs(inner) => collect_quadratic_sqrt_base(inner, var, base),
+        Expr::Variable(_) | Expr::Constant(_) => true,
+    }
+}
+
+fn rewrite_quadratic_sqrt_expr(
+    expr: &Expr,
+    base_norm: &Expr,
+    sqrt_expr: &Expr,
+) -> Option<Expr> {
+    if normalize(expr.clone()) == *base_norm {
+        return Some(pow_expr(sqrt_expr.clone(), Rational::from_integer(2.into())));
+    }
+
+    match expr {
+        Expr::Constant(_) | Expr::Variable(_) => Some(expr.clone()),
+        Expr::Add(a, b) => Some(Expr::Add(
+            rewrite_quadratic_sqrt_expr(a, base_norm, sqrt_expr)?.boxed(),
+            rewrite_quadratic_sqrt_expr(b, base_norm, sqrt_expr)?.boxed(),
+        )),
+        Expr::Sub(a, b) => Some(Expr::Sub(
+            rewrite_quadratic_sqrt_expr(a, base_norm, sqrt_expr)?.boxed(),
+            rewrite_quadratic_sqrt_expr(b, base_norm, sqrt_expr)?.boxed(),
+        )),
+        Expr::Mul(a, b) => Some(Expr::Mul(
+            rewrite_quadratic_sqrt_expr(a, base_norm, sqrt_expr)?.boxed(),
+            rewrite_quadratic_sqrt_expr(b, base_norm, sqrt_expr)?.boxed(),
+        )),
+        Expr::Div(a, b) => Some(Expr::Div(
+            rewrite_quadratic_sqrt_expr(a, base_norm, sqrt_expr)?.boxed(),
+            rewrite_quadratic_sqrt_expr(b, base_norm, sqrt_expr)?.boxed(),
+        )),
+        Expr::Neg(inner) => rewrite_quadratic_sqrt_expr(inner, base_norm, sqrt_expr)
+            .map(|res| Expr::Neg(res.boxed())),
+        Expr::Pow(base, exp) => {
+            let exp_const = extract_rational_const(exp)?;
+            let base_norm_inner = normalize((**base).clone());
+            if base_norm_inner == *base_norm {
+                let scaled = exp_const.clone() * Rational::from_integer(2.into());
+                if !scaled.is_integer() {
+                    return None;
+                }
+                return Some(pow_expr(sqrt_expr.clone(), scaled));
+            }
+            if !exp_const.is_integer() {
+                return None;
+            }
+            let base_replaced = rewrite_quadratic_sqrt_expr(base, base_norm, sqrt_expr)?;
+            Some(pow_expr(base_replaced, exp_const))
+        }
+        _ => None,
+    }
+}
+
+fn pow_expr(base: Expr, exp: Rational) -> Expr {
+    if exp.is_zero() {
+        Expr::Constant(Rational::one())
+    } else if exp == Rational::one() {
+        base
+    } else {
+        Expr::Pow(base.boxed(), Expr::Constant(exp).boxed())
+    }
+}
+
+fn extract_integer(exp: &Expr) -> Option<i64> {
+    let exp_const = extract_rational_const(exp)?;
+    if !exp_const.is_integer() {
+        return None;
+    }
+    exp_const.to_integer().to_i64()
+}
+
+fn rationalize_expr(expr: &Expr, var: &str) -> Option<(Expr, Expr)> {
+    if !contains_var(expr, var) {
+        return Some((expr.clone(), Expr::Constant(Rational::one())));
+    }
+    match expr {
+        Expr::Variable(name) if name == var => Some((
+            Expr::Variable(name.clone()),
+            Expr::Constant(Rational::one()),
+        )),
+        Expr::Constant(_) => Some((expr.clone(), Expr::Constant(Rational::one()))),
+        Expr::Add(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Add(
+                Expr::Mul(an.boxed(), bd.clone().boxed()).boxed(),
+                Expr::Mul(bn.boxed(), ad.clone().boxed()).boxed(),
+            );
+            let denom = Expr::Mul(ad.boxed(), bd.boxed());
+            Some((numer, denom))
+        }
+        Expr::Sub(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Sub(
+                Expr::Mul(an.boxed(), bd.clone().boxed()).boxed(),
+                Expr::Mul(bn.boxed(), ad.clone().boxed()).boxed(),
+            );
+            let denom = Expr::Mul(ad.boxed(), bd.boxed());
+            Some((numer, denom))
+        }
+        Expr::Mul(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Mul(an.boxed(), bn.boxed());
+            let denom = Expr::Mul(ad.boxed(), bd.boxed());
+            Some((numer, denom))
+        }
+        Expr::Div(a, b) => {
+            let (an, ad) = rationalize_expr(a, var)?;
+            let (bn, bd) = rationalize_expr(b, var)?;
+            let numer = Expr::Mul(an.boxed(), bd.boxed());
+            let denom = Expr::Mul(ad.boxed(), bn.boxed());
+            Some((numer, denom))
+        }
+        Expr::Neg(inner) => {
+            let (n, d) = rationalize_expr(inner, var)?;
+            Some((Expr::Neg(n.boxed()), d))
+        }
+        Expr::Pow(base, exp) => {
+            let power = extract_integer(exp)?;
+            if power == 0 {
+                return Some((
+                    Expr::Constant(Rational::one()),
+                    Expr::Constant(Rational::one()),
+                ));
+            }
+            let (n, d) = rationalize_expr(base, var)?;
+            let abs_power = power.abs();
+            let n_pow = pow_expr(n, Rational::from_integer(abs_power.into()));
+            let d_pow = pow_expr(d, Rational::from_integer(abs_power.into()));
+            if power >= 0 {
+                Some((n_pow, d_pow))
+            } else {
+                Some((d_pow, n_pow))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn extract_rational_const(expr: &Expr) -> Option<Rational> {
+    match expr {
+        Expr::Constant(c) => Some(c.clone()),
+        Expr::Neg(inner) => extract_rational_const(inner).map(|c| -c),
+        _ => {
+            let simplified = simplify_fully(expr.clone());
+            match simplified {
+                Expr::Constant(c) => Some(c),
+                Expr::Neg(inner) => extract_rational_const(&inner).map(|c| -c),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn is_half_integer(exp: &Rational) -> bool {
+    exp.denom() == &BigInt::from(2)
+}
+
+fn sqrt_rational_expr(value: &Rational) -> Expr {
+    Expr::Pow(
+        Expr::Constant(value.clone()).boxed(),
+        Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+    )
 }
 
 pub(super) fn substitution_candidates(expr: &Expr, original_expr: &Expr) -> (Expr, Vec<Expr>) {

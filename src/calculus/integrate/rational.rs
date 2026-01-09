@@ -436,18 +436,21 @@ fn integrate_rothstein_trager(numerator: &Poly, denominator: &Poly, var: &str) -
                 continue;
             }
             let (roots, d) = quadratic_roots_quadext(&s)?;
-            for root in roots {
-                if root.is_zero() {
-                    continue;
-                }
-                let g_at_root = quad_poly_eval_t(&g_t_coeffs, &root, &d);
-                if g_at_root.coeffs.is_empty() || g_at_root.coeffs.len() == 1 {
-                    continue;
-                }
+            let root = roots.first()?;
+            if root.is_zero() {
+                continue;
+            }
+            let g_at_root = quad_poly_eval_t(&g_t_coeffs, root, &d);
+            if g_at_root.coeffs.is_empty() || g_at_root.coeffs.len() == 1 {
+                continue;
+            }
+            if d.is_zero() {
                 terms.push(Expr::Mul(
                     root.to_expr().boxed(),
                     log_abs(g_at_root.to_expr(var, &d)).boxed(),
                 ));
+            } else {
+                terms.push(combine_quadratic_residue_terms(root, &g_at_root, &d, var));
             }
             continue;
         }
@@ -1275,6 +1278,79 @@ fn quad_poly_eval_t(coeffs_t: &[Poly], root: &QuadExt, d: &Rational) -> QuadPoly
         root_pow = root_pow * root.clone();
     }
     QuadPoly::from_coeffs(coeffs)
+}
+
+fn quad_poly_split(poly: &QuadPoly) -> (Poly, Poly) {
+    let mut a_coeffs = BTreeMap::new();
+    let mut b_coeffs = BTreeMap::new();
+    for (exp, coeff) in poly.coeffs.iter().enumerate() {
+        if !coeff.a.is_zero() {
+            a_coeffs.insert(exp, coeff.a.clone());
+        }
+        if !coeff.b.is_zero() {
+            b_coeffs.insert(exp, coeff.b.clone());
+        }
+    }
+    (Poly { coeffs: a_coeffs }, Poly { coeffs: b_coeffs })
+}
+
+fn combine_quadratic_residue_terms(
+    root: &QuadExt,
+    g_at_root: &QuadPoly,
+    d: &Rational,
+    var: &str,
+) -> Expr {
+    let (a_poly, b_poly) = quad_poly_split(g_at_root);
+    let a_expr = a_poly.to_expr(var);
+    let b_expr = b_poly.to_expr(var);
+
+    let a_sq = Expr::Pow(a_expr.clone().boxed(), Expr::integer(2).boxed());
+    let b_sq = Expr::Pow(b_expr.clone().boxed(), Expr::integer(2).boxed());
+    let norm = Expr::Sub(
+        a_sq.boxed(),
+        Expr::Mul(Expr::Constant(d.clone()).boxed(), b_sq.boxed()).boxed(),
+    );
+
+    let mut parts = Vec::new();
+    if !root.a.is_zero() {
+        parts.push(Expr::Mul(
+            Expr::Constant(root.a.clone()).boxed(),
+            log_abs(norm).boxed(),
+        ));
+    }
+
+    if !root.b.is_zero() {
+        if d.is_negative() {
+            let d_neg = -d.clone();
+            let sqrt_d = sqrt_rational_expr(&d_neg);
+            let atan_arg = Expr::Div(
+                Expr::Mul(b_expr.clone().boxed(), sqrt_d.clone().boxed()).boxed(),
+                a_expr.clone().boxed(),
+            );
+            let coeff = Rational::from_integer(2.into()) * root.b.clone() * d.clone();
+            if !coeff.is_zero() {
+                parts.push(Expr::Mul(
+                    Expr::Constant(coeff).boxed(),
+                    Expr::Atan(atan_arg.boxed()).boxed(),
+                ));
+            }
+        } else if !d.is_zero() {
+            let sqrt_d = sqrt_rational_expr(d);
+            let numerator = Expr::Add(
+                a_expr.clone().boxed(),
+                Expr::Mul(b_expr.clone().boxed(), sqrt_d.clone().boxed()).boxed(),
+            );
+            let denominator = Expr::Sub(
+                a_expr.boxed(),
+                Expr::Mul(b_expr.boxed(), sqrt_d.clone().boxed()).boxed(),
+            );
+            let ratio = Expr::Div(numerator.boxed(), denominator.boxed());
+            let coeff = Expr::Mul(Expr::Constant(root.b.clone()).boxed(), sqrt_d.boxed());
+            parts.push(Expr::Mul(coeff.boxed(), log_abs(ratio).boxed()));
+        }
+    }
+
+    simplify(sum_exprs(parts))
 }
 
 fn sqrt_rational_expr(value: &Rational) -> Expr {

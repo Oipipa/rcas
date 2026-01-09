@@ -552,6 +552,30 @@ fn assert_substitution_integral(input: &str, expected: &str) {
     }
 }
 
+fn assert_substitution_roundtrip(input: &str, samples: &[f64]) {
+    let expr = parse_expr(input).expect("parse substitution roundtrip input");
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            let sub_success = report.attempts.iter().any(|a| {
+                a.strategy == Strategy::Substitution && a.status == AttemptStatus::Succeeded
+            });
+            assert!(sub_success, "expected substitution success for {input}");
+            let derivative = simplify_fully(differentiate("x", &result));
+            let target = simplify_fully(expr);
+            for &sample in samples {
+                let lhs = eval_expr_f64(&derivative, "x", sample);
+                let rhs = eval_expr_f64(&target, "x", sample);
+                let delta = (lhs - rhs).abs();
+                assert!(
+                    delta < 1e-8,
+                    "roundtrip diff for {input} at x={sample} -> {delta}"
+                );
+            }
+        }
+        other => panic!("expected substitution integration for {input}, got {other:?}"),
+    }
+}
+
 fn assert_non_elementary(input: &str, expected: NonElementaryKind) {
     let expr = parse_expr(input).expect("parse non-elementary input");
     let expected_kind = expected.clone();
@@ -1720,6 +1744,28 @@ fn algebraic_quadratic_trig_substitution_roundtrip_suite() {
 }
 
 #[test]
+fn algebraic_quadratic_linear_denominator_roundtrip_suite() {
+    let samples = vec![0.2, 0.7, 1.3, 2.1];
+    let cases = vec![
+        "(x^2 + 2*x + 5)^(1/2)/(x + 1)",
+        "(2*x^2 + 1)^(1/2)/(x + 2)",
+        "(3*x^2 + 2*x + 2)^(1/2)/(2*x + 1)",
+        "(x^2 + 4)^(1/2)/(3*x + 2)",
+        "(x^2 + 1)^(1/2)/(x + 3)",
+        "(x^2 + 2*x + 5)^(1/2)/(x + 1)^2",
+        "(2*x^2 + 1)^(1/2)/(x + 2)^2",
+        "(3*x^2 + 2*x + 2)^(1/2)/(2*x + 1)^3",
+        "(x^2 + 4)^(1/2)/(3*x + 2)^2",
+        "2*(x^2 + 1)^(1/2)/(x + 3)^2",
+    ];
+
+    assert_eq!(cases.len(), 10, "expected 10 linear-denominator cases");
+    for input in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn algebraic_quadratic_inverse_power_suite() {
     let samples = vec![-1.0, -0.5, 0.0, 0.5, 1.0];
     let cases = vec![
@@ -2322,6 +2368,27 @@ fn substitution_nontrivial_suite() {
 }
 
 #[test]
+fn substitution_quadratic_sqrt_suite() {
+    let cases: Vec<(&str, Vec<f64>)> = vec![
+        ("(9 - x^2)^(1/2)", vec![-2.5, -1.5, 0.0, 1.5, 2.5]),
+        ("1/(9 - x^2)^(1/2)", vec![-2.5, -1.0, 0.0, 1.0, 2.0]),
+        ("x/(9 - x^2)^(1/2)", vec![-2.0, -1.0, 0.5, 1.5, 2.0]),
+        ("(9 + x^2)^(1/2)", vec![-2.0, -0.5, 0.0, 1.5, 3.0]),
+        ("(x^2 - 4)^(1/2)", vec![2.5, 3.0, 4.0, 5.0]),
+        ("1/(x^2 - 4)^(1/2)", vec![2.5, 3.0, 4.0, 5.0]),
+        ("(x^2 + x + 1)^(1/2)", vec![-2.0, -1.0, 0.0, 1.0, 2.0]),
+        ("1/(x^2 + x + 1)^(1/2)", vec![-2.0, -1.0, 0.0, 1.0, 2.0]),
+        ("(-x^2 + x + 1)^(1/2)", vec![-0.5, 0.2, 0.5, 1.0, 1.4]),
+        ("(-x^2 + 5*x - 4)^(1/2)", vec![1.2, 2.0, 3.0, 3.8]),
+    ];
+
+    assert_eq!(cases.len(), 10, "expected 10 quadratic substitution cases");
+    for (input, samples) in cases {
+        assert_substitution_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn substitution_function_of_inner_suite() {
     let cases = vec![
         (
@@ -2636,6 +2703,29 @@ fn rational_hyperbolic_half_angle_roundtrips() {
 
     assert_eq!(cases.len(), 4, "expected 4 rational hyperbolic cases");
     for (input, samples) in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn trig_power_and_mixed_argument_roundtrip_suite() {
+    let samples = vec![0.2, 0.5, 1.0];
+    let cases = vec![
+        "tan(x)^3",
+        "sec(x)^3",
+        "tan(x)^3*sec(x)^2",
+        "tan(x)^2*sec(x)^3",
+        "cot(x)^3",
+        "csc(x)^4",
+        "cot(x)^2*csc(x)^3",
+        "sin(2*x)*cos(3*x)",
+        "sin(2*x)*sin(5*x)",
+        "cos(2*x)*cos(4*x)",
+        "sinh(2*x)*cosh(3*x)",
+    ];
+
+    assert_eq!(cases.len(), 11, "expected 11 mixed trig cases");
+    for input in cases {
         assert_numeric_roundtrip(input, &samples);
     }
 }

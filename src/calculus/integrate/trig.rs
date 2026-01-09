@@ -66,6 +66,18 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
             (Expr::Cos(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
                 integrate_cos_power(inner, p, var)
             }
+            (Expr::Tan(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                integrate_tan_power(inner, p, var)
+            }
+            (Expr::Sec(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                integrate_sec_power(inner, p, var)
+            }
+            (Expr::Csc(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                integrate_csc_power(inner, p, var)
+            }
+            (Expr::Cot(inner), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                integrate_cot_power(inner, p, var)
+            }
             (Expr::Sec(inner), Expr::Constant(p)) if p == &Rational::from_integer(2.into()) => {
                 integrate_sec_squared(inner, var)
             }
@@ -74,7 +86,10 @@ pub fn integrate(expr: &Expr, var: &str) -> Option<Expr> {
             }
             _ => None,
         },
-        Expr::Mul(_, _) => integrate_sin_cos_product(expr, var),
+        Expr::Mul(_, _) => integrate_sin_cos_product(expr, var)
+            .or_else(|| integrate_tan_sec_product(expr, var))
+            .or_else(|| integrate_cot_csc_product(expr, var))
+            .or_else(|| integrate_mixed_trig_product(expr, var)),
         Expr::Asin(arg) => integrate_arcsin(arg, var),
         Expr::Acos(arg) => integrate_arccos(arg, var),
         Expr::Atan(arg) => integrate_arctan(arg, var),
@@ -640,6 +655,34 @@ fn integrate_cos_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr
     Some(scale_by_coeff(integral, k))
 }
 
+fn integrate_tan_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr> {
+    let n = pow_to_i64(power)?;
+    let k = coeff_of_var(inner, var)?;
+    let integral = tan_power_reduction(n, inner)?;
+    Some(scale_by_coeff(integral, k))
+}
+
+fn integrate_sec_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr> {
+    let n = pow_to_i64(power)?;
+    let k = coeff_of_var(inner, var)?;
+    let integral = sec_power_reduction(n, inner)?;
+    Some(scale_by_coeff(integral, k))
+}
+
+fn integrate_csc_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr> {
+    let n = pow_to_i64(power)?;
+    let k = coeff_of_var(inner, var)?;
+    let integral = csc_power_reduction(n, inner)?;
+    Some(scale_by_coeff(integral, k))
+}
+
+fn integrate_cot_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr> {
+    let n = pow_to_i64(power)?;
+    let k = coeff_of_var(inner, var)?;
+    let integral = cot_power_reduction(n, inner)?;
+    Some(scale_by_coeff(integral, k))
+}
+
 fn sin_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
     if n < 0 {
         return None;
@@ -734,6 +777,116 @@ fn cos_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
     Some(simplify(Expr::Add(leading.boxed(), scaled.boxed())))
 }
 
+fn tan_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
+    if n < 0 {
+        return None;
+    }
+    if n == 0 {
+        return Some(inner.clone());
+    }
+    if n == 1 {
+        return Some(Expr::Neg(log_abs(Expr::Cos(inner.clone().boxed())).boxed()));
+    }
+    let n_minus_one = Rational::from_integer((n - 1).into());
+    let power = pow_expr(Expr::Tan(inner.clone().boxed()), (n - 1) as usize);
+    let leading = Expr::Div(power.boxed(), Expr::Constant(n_minus_one).boxed());
+    let reduced = tan_power_reduction(n - 2, inner)?;
+    Some(simplify(Expr::Sub(leading.boxed(), reduced.boxed())))
+}
+
+fn sec_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
+    if n < 0 {
+        return None;
+    }
+    if n == 0 {
+        return Some(inner.clone());
+    }
+    if n == 1 {
+        let sum = Expr::Add(
+            Expr::Sec(inner.clone().boxed()).boxed(),
+            Expr::Tan(inner.clone().boxed()).boxed(),
+        );
+        return Some(log_abs(sum));
+    }
+    if n == 2 {
+        return Some(Expr::Tan(inner.clone().boxed()));
+    }
+    let n_minus_one = Rational::from_integer((n - 1).into());
+    let n_minus_two = Rational::from_integer((n - 2).into());
+    let leading = Expr::Div(
+        Expr::Mul(
+            pow_expr(Expr::Sec(inner.clone().boxed()), (n - 2) as usize).boxed(),
+            Expr::Tan(inner.clone().boxed()).boxed(),
+        )
+        .boxed(),
+        Expr::Constant(n_minus_one.clone()).boxed(),
+    );
+    let reduced = sec_power_reduction(n - 2, inner)?;
+    let scaled = Expr::Mul(
+        Expr::Constant(n_minus_two / n_minus_one).boxed(),
+        reduced.boxed(),
+    );
+    Some(simplify(Expr::Add(leading.boxed(), scaled.boxed())))
+}
+
+fn csc_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
+    if n < 0 {
+        return None;
+    }
+    if n == 0 {
+        return Some(inner.clone());
+    }
+    if n == 1 {
+        let diff = Expr::Sub(
+            Expr::Csc(inner.clone().boxed()).boxed(),
+            Expr::Cot(inner.clone().boxed()).boxed(),
+        );
+        return Some(log_abs(diff));
+    }
+    if n == 2 {
+        return Some(Expr::Neg(Expr::Cot(inner.clone().boxed()).boxed()));
+    }
+    let n_minus_one = Rational::from_integer((n - 1).into());
+    let n_minus_two = Rational::from_integer((n - 2).into());
+    let leading = Expr::Div(
+        Expr::Neg(
+            Expr::Mul(
+                pow_expr(Expr::Csc(inner.clone().boxed()), (n - 2) as usize).boxed(),
+                Expr::Cot(inner.clone().boxed()).boxed(),
+            )
+            .boxed(),
+        )
+        .boxed(),
+        Expr::Constant(n_minus_one.clone()).boxed(),
+    );
+    let reduced = csc_power_reduction(n - 2, inner)?;
+    let scaled = Expr::Mul(
+        Expr::Constant(n_minus_two / n_minus_one).boxed(),
+        reduced.boxed(),
+    );
+    Some(simplify(Expr::Add(leading.boxed(), scaled.boxed())))
+}
+
+fn cot_power_reduction(n: i64, inner: &Expr) -> Option<Expr> {
+    if n < 0 {
+        return None;
+    }
+    if n == 0 {
+        return Some(inner.clone());
+    }
+    if n == 1 {
+        return Some(log_abs(Expr::Sin(inner.clone().boxed())));
+    }
+    let n_minus_one = Rational::from_integer((n - 1).into());
+    let power = pow_expr(Expr::Cot(inner.clone().boxed()), (n - 1) as usize);
+    let leading = Expr::Div(
+        Expr::Neg(power.boxed()).boxed(),
+        Expr::Constant(n_minus_one).boxed(),
+    );
+    let reduced = cot_power_reduction(n - 2, inner)?;
+    Some(simplify(Expr::Sub(leading.boxed(), reduced.boxed())))
+}
+
 fn integrate_sin_cos_product(expr: &Expr, var: &str) -> Option<Expr> {
     let (const_factor, factors) = flatten_product(expr);
     if const_factor.is_zero() {
@@ -804,6 +957,467 @@ fn integrate_sin_cos_product(expr: &Expr, var: &str) -> Option<Expr> {
     } else {
         Some(simplify(Expr::Mul(const_expr.boxed(), scaled.boxed())))
     }
+}
+
+fn integrate_tan_sec_product(expr: &Expr, var: &str) -> Option<Expr> {
+    let (const_factor, factors) = flatten_product(expr);
+    if const_factor.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    let mut const_factors = Vec::new();
+    let mut var_factors = Vec::new();
+    for factor in factors {
+        if contains_var(&factor, var) {
+            var_factors.push(factor);
+        } else {
+            const_factors.push(factor);
+        }
+    }
+    let const_expr = rebuild_product(const_factor, const_factors);
+    let mut tan_exp = 0_i64;
+    let mut sec_exp = 0_i64;
+    let mut inner: Option<Expr> = None;
+
+    for factor in var_factors {
+        match factor {
+            Expr::Tan(arg) => {
+                inner = match inner {
+                    None => Some(*arg.clone()),
+                    Some(ref existing) if *existing == *arg => Some(existing.clone()),
+                    _ => return None,
+                };
+                tan_exp += 1;
+            }
+            Expr::Sec(arg) => {
+                inner = match inner {
+                    None => Some(*arg.clone()),
+                    Some(ref existing) if *existing == *arg => Some(existing.clone()),
+                    _ => return None,
+                };
+                sec_exp += 1;
+            }
+            Expr::Pow(base, exp) => match (&*base, &*exp) {
+                (Expr::Tan(arg), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                    inner = match inner {
+                        None => Some(*arg.clone()),
+                        Some(ref existing) if *existing == **arg => Some(existing.clone()),
+                        _ => return None,
+                    };
+                    tan_exp += pow_to_i64(p)?;
+                }
+                (Expr::Sec(arg), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                    inner = match inner {
+                        None => Some(*arg.clone()),
+                        Some(ref existing) if *existing == **arg => Some(existing.clone()),
+                        _ => return None,
+                    };
+                    sec_exp += pow_to_i64(p)?;
+                }
+                _ => return None,
+            },
+            Expr::Constant(_) => {}
+            _ => return None,
+        }
+    }
+
+    let inner = inner?;
+    let k = coeff_of_var(&inner, var)?;
+    let combined = integrate_tan_sec_powers(tan_exp, sec_exp, &inner, k)?;
+    let scaled = simplify(combined);
+    if is_const_one(&const_expr) {
+        Some(scaled)
+    } else {
+        Some(simplify(Expr::Mul(const_expr.boxed(), scaled.boxed())))
+    }
+}
+
+fn integrate_tan_sec_powers(
+    tan_exp: i64,
+    sec_exp: i64,
+    inner: &Expr,
+    k: Expr,
+) -> Option<Expr> {
+    if tan_exp == 0 && sec_exp == 0 {
+        return None;
+    }
+    if sec_exp == 0 {
+        return tan_power_reduction(tan_exp, inner).map(|r| scale_by_coeff(r, k.clone()));
+    }
+    if tan_exp == 0 {
+        return sec_power_reduction(sec_exp, inner).map(|r| scale_by_coeff(r, k.clone()));
+    }
+
+    if sec_exp % 2 == 0 && sec_exp >= 2 {
+        let p = (sec_exp - 2) / 2;
+        let mut terms = Vec::new();
+        for j in 0..=p {
+            let coeff = choose(p, j);
+            let power = tan_exp + 2 * j + 1;
+            let denom = Rational::from_integer(power.into());
+            let term_pow = pow_expr(Expr::Tan(inner.clone().boxed()), power as usize);
+            let term = Expr::Mul(
+                Expr::Constant(coeff / denom).boxed(),
+                term_pow.boxed(),
+            );
+            terms.push(term);
+        }
+        let sum = terms
+            .into_iter()
+            .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+            .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+        return Some(scale_by_coeff(sum, k));
+    }
+
+    if tan_exp % 2 == 1 && sec_exp >= 1 {
+        let q = (tan_exp - 1) / 2;
+        let mut terms = Vec::new();
+        for j in 0..=q {
+            let coeff = choose(q, j);
+            let sign = if (q - j) % 2 == 0 {
+                Rational::one()
+            } else {
+                -Rational::one()
+            };
+            let power = sec_exp + 2 * j;
+            let denom = Rational::from_integer(power.into());
+            let term_pow = pow_expr(Expr::Sec(inner.clone().boxed()), power as usize);
+            let term = Expr::Mul(
+                Expr::Constant(sign * coeff / denom).boxed(),
+                term_pow.boxed(),
+            );
+            terms.push(term);
+        }
+        let sum = terms
+            .into_iter()
+            .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+            .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+        return Some(scale_by_coeff(sum, k));
+    }
+
+    if tan_exp % 2 == 0 && sec_exp % 2 == 1 {
+        let q = tan_exp / 2;
+        let mut terms = Vec::new();
+        for j in 0..=q {
+            let coeff = choose(q, j);
+            let sign = if (q - j) % 2 == 0 {
+                Rational::one()
+            } else {
+                -Rational::one()
+            };
+            let power = sec_exp + 2 * j;
+            let integral = sec_power_reduction(power, inner)?;
+            terms.push(Expr::Mul(
+                Expr::Constant(sign * coeff).boxed(),
+                integral.boxed(),
+            ));
+        }
+        let sum = terms
+            .into_iter()
+            .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+            .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+        return Some(scale_by_coeff(sum, k));
+    }
+
+    None
+}
+
+fn integrate_cot_csc_product(expr: &Expr, var: &str) -> Option<Expr> {
+    let (const_factor, factors) = flatten_product(expr);
+    if const_factor.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    let mut const_factors = Vec::new();
+    let mut var_factors = Vec::new();
+    for factor in factors {
+        if contains_var(&factor, var) {
+            var_factors.push(factor);
+        } else {
+            const_factors.push(factor);
+        }
+    }
+    let const_expr = rebuild_product(const_factor, const_factors);
+    let mut cot_exp = 0_i64;
+    let mut csc_exp = 0_i64;
+    let mut inner: Option<Expr> = None;
+
+    for factor in var_factors {
+        match factor {
+            Expr::Cot(arg) => {
+                inner = match inner {
+                    None => Some(*arg.clone()),
+                    Some(ref existing) if *existing == *arg => Some(existing.clone()),
+                    _ => return None,
+                };
+                cot_exp += 1;
+            }
+            Expr::Csc(arg) => {
+                inner = match inner {
+                    None => Some(*arg.clone()),
+                    Some(ref existing) if *existing == *arg => Some(existing.clone()),
+                    _ => return None,
+                };
+                csc_exp += 1;
+            }
+            Expr::Pow(base, exp) => match (&*base, &*exp) {
+                (Expr::Cot(arg), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                    inner = match inner {
+                        None => Some(*arg.clone()),
+                        Some(ref existing) if *existing == **arg => Some(existing.clone()),
+                        _ => return None,
+                    };
+                    cot_exp += pow_to_i64(p)?;
+                }
+                (Expr::Csc(arg), Expr::Constant(p)) if p.is_integer() && p >= &Rational::zero() => {
+                    inner = match inner {
+                        None => Some(*arg.clone()),
+                        Some(ref existing) if *existing == **arg => Some(existing.clone()),
+                        _ => return None,
+                    };
+                    csc_exp += pow_to_i64(p)?;
+                }
+                _ => return None,
+            },
+            Expr::Constant(_) => {}
+            _ => return None,
+        }
+    }
+
+    let inner = inner?;
+    let k = coeff_of_var(&inner, var)?;
+    let combined = integrate_cot_csc_powers(cot_exp, csc_exp, &inner, k)?;
+    let scaled = simplify(combined);
+    if is_const_one(&const_expr) {
+        Some(scaled)
+    } else {
+        Some(simplify(Expr::Mul(const_expr.boxed(), scaled.boxed())))
+    }
+}
+
+fn integrate_cot_csc_powers(
+    cot_exp: i64,
+    csc_exp: i64,
+    inner: &Expr,
+    k: Expr,
+) -> Option<Expr> {
+    if cot_exp == 0 && csc_exp == 0 {
+        return None;
+    }
+    if csc_exp == 0 {
+        return cot_power_reduction(cot_exp, inner).map(|r| scale_by_coeff(r, k.clone()));
+    }
+    if cot_exp == 0 {
+        return csc_power_reduction(csc_exp, inner).map(|r| scale_by_coeff(r, k.clone()));
+    }
+
+    if csc_exp % 2 == 0 && csc_exp >= 2 {
+        let p = (csc_exp - 2) / 2;
+        let mut terms = Vec::new();
+        for j in 0..=p {
+            let coeff = choose(p, j);
+            let power = cot_exp + 2 * j + 1;
+            let denom = Rational::from_integer(power.into());
+            let term_pow = pow_expr(Expr::Cot(inner.clone().boxed()), power as usize);
+            let term = Expr::Mul(
+                Expr::Constant(-coeff / denom).boxed(),
+                term_pow.boxed(),
+            );
+            terms.push(term);
+        }
+        let sum = terms
+            .into_iter()
+            .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+            .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+        return Some(scale_by_coeff(sum, k));
+    }
+
+    if cot_exp % 2 == 1 && csc_exp >= 1 {
+        let q = (cot_exp - 1) / 2;
+        let mut terms = Vec::new();
+        for j in 0..=q {
+            let coeff = choose(q, j);
+            let sign = if (q - j) % 2 == 0 {
+                -Rational::one()
+            } else {
+                Rational::one()
+            };
+            let power = csc_exp + 2 * j;
+            let denom = Rational::from_integer(power.into());
+            let term_pow = pow_expr(Expr::Csc(inner.clone().boxed()), power as usize);
+            let term = Expr::Mul(
+                Expr::Constant(sign * coeff / denom).boxed(),
+                term_pow.boxed(),
+            );
+            terms.push(term);
+        }
+        let sum = terms
+            .into_iter()
+            .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+            .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+        return Some(scale_by_coeff(sum, k));
+    }
+
+    if cot_exp % 2 == 0 && csc_exp % 2 == 1 {
+        let q = cot_exp / 2;
+        let mut terms = Vec::new();
+        for j in 0..=q {
+            let coeff = choose(q, j);
+            let sign = if (q - j) % 2 == 0 {
+                Rational::one()
+            } else {
+                -Rational::one()
+            };
+            let power = csc_exp + 2 * j;
+            let integral = csc_power_reduction(power, inner)?;
+            terms.push(Expr::Mul(
+                Expr::Constant(sign * coeff).boxed(),
+                integral.boxed(),
+            ));
+        }
+        let sum = terms
+            .into_iter()
+            .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
+            .unwrap_or_else(|| Expr::Constant(Rational::zero()));
+        return Some(scale_by_coeff(sum, k));
+    }
+
+    None
+}
+
+fn integrate_mixed_trig_product(expr: &Expr, var: &str) -> Option<Expr> {
+    let (const_factor, factors) = flatten_product(expr);
+    if const_factor.is_zero() {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    let mut const_factors = Vec::new();
+    let mut var_factors = Vec::new();
+    for factor in factors {
+        if contains_var(&factor, var) {
+            var_factors.push(factor);
+        } else {
+            const_factors.push(factor);
+        }
+    }
+    if var_factors.len() != 2 {
+        return None;
+    }
+
+    let const_expr = rebuild_product(const_factor, const_factors);
+    let (first, second) = (&var_factors[0], &var_factors[1]);
+    let half = Rational::new(1.into(), 2.into());
+
+    let combined = match (first, second) {
+        (Expr::Sin(a), Expr::Sin(b)) => {
+            let arg_sum = Expr::Add(a.clone().boxed(), b.clone().boxed());
+            let arg_diff = Expr::Sub(a.clone().boxed(), b.clone().boxed());
+            let term1 = integrate_linear_trig(TrigSimple::Cos, arg_diff, var)?;
+            let term2 = integrate_linear_trig(TrigSimple::Cos, arg_sum, var)?;
+            Expr::Mul(
+                Expr::Constant(half).boxed(),
+                Expr::Sub(term1.boxed(), term2.boxed()).boxed(),
+            )
+        }
+        (Expr::Sin(a), Expr::Cos(b)) | (Expr::Cos(b), Expr::Sin(a)) => {
+            let arg_sum = Expr::Add(a.clone().boxed(), b.clone().boxed());
+            let arg_diff = Expr::Sub(a.clone().boxed(), b.clone().boxed());
+            let term1 = integrate_linear_trig(TrigSimple::Sin, arg_sum, var)?;
+            let term2 = integrate_linear_trig(TrigSimple::Sin, arg_diff, var)?;
+            Expr::Mul(
+                Expr::Constant(half).boxed(),
+                Expr::Add(term1.boxed(), term2.boxed()).boxed(),
+            )
+        }
+        (Expr::Cos(a), Expr::Cos(b)) => {
+            let arg_sum = Expr::Add(a.clone().boxed(), b.clone().boxed());
+            let arg_diff = Expr::Sub(a.clone().boxed(), b.clone().boxed());
+            let term1 = integrate_linear_trig(TrigSimple::Cos, arg_sum, var)?;
+            let term2 = integrate_linear_trig(TrigSimple::Cos, arg_diff, var)?;
+            Expr::Mul(
+                Expr::Constant(half).boxed(),
+                Expr::Add(term1.boxed(), term2.boxed()).boxed(),
+            )
+        }
+        (Expr::Sinh(a), Expr::Sinh(b)) => {
+            let arg_sum = Expr::Add(a.clone().boxed(), b.clone().boxed());
+            let arg_diff = Expr::Sub(a.clone().boxed(), b.clone().boxed());
+            let term1 = integrate_linear_hyperbolic(HyperbolicSimple::Cosh, arg_sum, var)?;
+            let term2 = integrate_linear_hyperbolic(HyperbolicSimple::Cosh, arg_diff, var)?;
+            Expr::Mul(
+                Expr::Constant(half).boxed(),
+                Expr::Sub(term1.boxed(), term2.boxed()).boxed(),
+            )
+        }
+        (Expr::Sinh(a), Expr::Cosh(b)) | (Expr::Cosh(b), Expr::Sinh(a)) => {
+            let arg_sum = Expr::Add(a.clone().boxed(), b.clone().boxed());
+            let arg_diff = Expr::Sub(a.clone().boxed(), b.clone().boxed());
+            let term1 = integrate_linear_hyperbolic(HyperbolicSimple::Sinh, arg_sum, var)?;
+            let term2 = integrate_linear_hyperbolic(HyperbolicSimple::Sinh, arg_diff, var)?;
+            Expr::Mul(
+                Expr::Constant(half).boxed(),
+                Expr::Add(term1.boxed(), term2.boxed()).boxed(),
+            )
+        }
+        (Expr::Cosh(a), Expr::Cosh(b)) => {
+            let arg_sum = Expr::Add(a.clone().boxed(), b.clone().boxed());
+            let arg_diff = Expr::Sub(a.clone().boxed(), b.clone().boxed());
+            let term1 = integrate_linear_hyperbolic(HyperbolicSimple::Cosh, arg_sum, var)?;
+            let term2 = integrate_linear_hyperbolic(HyperbolicSimple::Cosh, arg_diff, var)?;
+            Expr::Mul(
+                Expr::Constant(half).boxed(),
+                Expr::Add(term1.boxed(), term2.boxed()).boxed(),
+            )
+        }
+        _ => return None,
+    };
+
+    if is_const_one(&const_expr) {
+        Some(simplify(combined))
+    } else {
+        Some(simplify(Expr::Mul(const_expr.boxed(), combined.boxed())))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TrigSimple {
+    Sin,
+    Cos,
+}
+
+fn integrate_linear_trig(func: TrigSimple, arg: Expr, var: &str) -> Option<Expr> {
+    if !contains_var(&arg, var) {
+        let base = match func {
+            TrigSimple::Sin => Expr::Sin(arg.boxed()),
+            TrigSimple::Cos => Expr::Cos(arg.boxed()),
+        };
+        return Some(Expr::Mul(base.boxed(), Expr::Variable(var.to_string()).boxed()));
+    }
+    let k = coeff_of_var(&arg, var)?;
+    let base = match func {
+        TrigSimple::Sin => Expr::Neg(Expr::Cos(arg.boxed()).boxed()),
+        TrigSimple::Cos => Expr::Sin(arg.boxed()),
+    };
+    Some(scale_by_coeff(base, k))
+}
+
+#[derive(Clone, Copy)]
+enum HyperbolicSimple {
+    Sinh,
+    Cosh,
+}
+
+fn integrate_linear_hyperbolic(func: HyperbolicSimple, arg: Expr, var: &str) -> Option<Expr> {
+    if !contains_var(&arg, var) {
+        let base = match func {
+            HyperbolicSimple::Sinh => Expr::Sinh(arg.boxed()),
+            HyperbolicSimple::Cosh => Expr::Cosh(arg.boxed()),
+        };
+        return Some(Expr::Mul(base.boxed(), Expr::Variable(var.to_string()).boxed()));
+    }
+    let k = coeff_of_var(&arg, var)?;
+    let base = match func {
+        HyperbolicSimple::Sinh => Expr::Cosh(arg.boxed()),
+        HyperbolicSimple::Cosh => Expr::Sinh(arg.boxed()),
+    };
+    Some(scale_by_coeff(base, k))
 }
 
 fn integrate_sin_cos_powers(

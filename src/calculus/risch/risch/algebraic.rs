@@ -144,39 +144,58 @@ fn integrate_sqrt_quadratic_over_x(expr: &Expr, var: &str, base_poly: &Poly) -> 
     if base_poly.degree()? != 2 {
         return None;
     }
-    if !base_poly.coeff(0).is_zero() {
-        return None;
-    }
-    let a = base_poly.coeff(2);
-    let b = base_poly.coeff(1);
-    if !a.is_negative() || b.is_zero() || b.is_negative() {
-        return None;
-    }
-
     let (const_factor, factors) = flatten_product(expr);
     let mut sqrt_found = false;
-    let mut var_power = Rational::zero();
+    let mut linear_power = Rational::zero();
+    let mut linear_poly: Option<Poly> = None;
     let mut other_factors = Vec::new();
     let half = Rational::from_integer(1.into()) / Rational::from_integer(2.into());
 
     for factor in factors {
         match factor {
             Expr::Variable(name) if name == var => {
-                var_power += Rational::one();
+                let var_poly = Poly::from_expr(&Expr::Variable(var.to_string()), var)?;
+                if let Some(existing) = &linear_poly {
+                    if existing != &var_poly {
+                        return None;
+                    }
+                } else {
+                    linear_poly = Some(var_poly);
+                }
+                linear_power += Rational::one();
             }
             Expr::Pow(base, exp) => match (&*base, &*exp) {
-                (Expr::Variable(name), Expr::Constant(k)) if name == var => {
-                    var_power += k.clone();
-                }
-                (_, Expr::Constant(k)) if *k == half => {
-                    let base_poly_candidate = Poly::from_expr(&base, var)?;
-                    if base_poly_candidate == *base_poly {
-                        sqrt_found = true;
-                    } else {
+                (_, _) => {
+                    let Some(power) = extract_rational_const(exp.as_ref()) else {
                         other_factors.push(Expr::Pow(base.clone(), exp.clone()));
+                        continue;
+                    };
+                    if power == half {
+                        let base_poly_candidate = Poly::from_expr(&base, var)?;
+                        if base_poly_candidate == *base_poly {
+                            sqrt_found = true;
+                        } else {
+                            other_factors.push(Expr::Pow(base.clone(), exp.clone()));
+                        }
+                        continue;
                     }
+                    if power.is_integer() {
+                        if let Some(poly) = Poly::from_expr(&base, var) {
+                            if poly.degree() == Some(1) {
+                                if let Some(existing) = &linear_poly {
+                                    if existing != &poly {
+                                        return None;
+                                    }
+                                } else {
+                                    linear_poly = Some(poly);
+                                }
+                                linear_power += power;
+                                continue;
+                            }
+                        }
+                    }
+                    other_factors.push(Expr::Pow(base.clone(), exp.clone()));
                 }
-                _ => other_factors.push(Expr::Pow(base.clone(), exp.clone())),
             },
             other => other_factors.push(other),
         }
@@ -188,35 +207,243 @@ fn integrate_sqrt_quadratic_over_x(expr: &Expr, var: &str, base_poly: &Poly) -> 
     if !other_factors.is_empty() {
         return None;
     }
-    let neg_one = Rational::from_integer((-1).into());
-    if var_power != neg_one {
+    let linear_poly = linear_poly?;
+    if !linear_power.is_integer() {
+        return None;
+    }
+    let power_int = linear_power.to_integer();
+    if power_int >= BigInt::from(0) {
+        return None;
+    }
+    let n = (-power_int).to_usize()?;
+    if n == 0 {
         return None;
     }
 
-    let sqrt_base = Expr::Pow(
-        base_poly.to_expr(var).boxed(),
-        Expr::Constant(half.clone()).boxed(),
-    );
-    let sqrt_neg_a = Expr::Pow(
-        Expr::Constant(-a.clone()).boxed(),
-        Expr::Constant(half.clone()).boxed(),
-    );
-    let asin_coeff = Expr::Div(Expr::Constant(b.clone()).boxed(), sqrt_neg_a.boxed());
-    let inner_coeff = -a / b;
-    let asin_arg = Expr::Pow(
-        Expr::Mul(
-            Expr::Constant(inner_coeff).boxed(),
-            Expr::Variable(var.to_string()).boxed(),
-        )
-        .boxed(),
-        Expr::Constant(half).boxed(),
-    );
-    let asin_term = Expr::Mul(asin_coeff.boxed(), Expr::Asin(asin_arg.boxed()).boxed());
-    let sum = Expr::Add(sqrt_base.boxed(), asin_term.boxed());
-    Some(simplify_fully(Expr::Mul(
-        Expr::Constant(const_factor).boxed(),
-        sum.boxed(),
-    )))
+    let a = base_poly.coeff(2);
+    let b = base_poly.coeff(1);
+    let c = base_poly.coeff(0);
+    let d = linear_poly.coeff(1);
+    let e = linear_poly.coeff(0);
+    if d.is_zero() {
+        return None;
+    }
+
+    if n == 1 && c.is_zero() && a.is_negative() && !b.is_zero() && b.is_positive() && e.is_zero() {
+        let sqrt_base = Expr::Pow(
+            base_poly.to_expr(var).boxed(),
+            Expr::Constant(half.clone()).boxed(),
+        );
+        let sqrt_neg_a = Expr::Pow(
+            Expr::Constant(-a.clone()).boxed(),
+            Expr::Constant(half.clone()).boxed(),
+        );
+        let asin_coeff = Expr::Div(Expr::Constant(b.clone()).boxed(), sqrt_neg_a.boxed());
+        let inner_coeff = -a / b;
+        let asin_arg = Expr::Pow(
+            Expr::Mul(
+                Expr::Constant(inner_coeff).boxed(),
+                Expr::Variable(var.to_string()).boxed(),
+            )
+            .boxed(),
+            Expr::Constant(half).boxed(),
+        );
+        let asin_term = Expr::Mul(asin_coeff.boxed(), Expr::Asin(asin_arg.boxed()).boxed());
+        let sum = Expr::Add(sqrt_base.boxed(), asin_term.boxed());
+        let scale = const_factor / d;
+        return Some(simplify_fully(Expr::Mul(
+            Expr::Constant(scale).boxed(),
+            sum.boxed(),
+        )));
+    }
+
+    integrate_sqrt_quadratic_over_linear_power(
+        expr,
+        const_factor,
+        base_poly,
+        &linear_poly,
+        n,
+        var,
+    )
+}
+
+fn integrate_sqrt_quadratic_over_linear_power(
+    expr: &Expr,
+    const_factor: Rational,
+    base_poly: &Poly,
+    linear_poly: &Poly,
+    power: usize,
+    var: &str,
+) -> Option<Expr> {
+    let a = base_poly.coeff(2);
+    let b = base_poly.coeff(1);
+    let c = base_poly.coeff(0);
+    let d = linear_poly.coeff(1);
+    let e = linear_poly.coeff(0);
+    if d.is_zero() {
+        return None;
+    }
+
+    let d_sq = d.clone() * d.clone();
+    let two = Rational::from_integer(2.into());
+    let a_u = a.clone() / d_sq.clone();
+    let b_u = b.clone() / d.clone() - two.clone() * a.clone() * e.clone() / d_sq.clone();
+    let c_u = a.clone() * e.clone() * e.clone() / d_sq.clone()
+        - b.clone() * e.clone() / d.clone()
+        + c.clone();
+
+    let u_name = fresh_symbol(expr, "__u");
+    let integral_u = integrate_sqrt_quadratic_over_power(
+        expr,
+        a_u,
+        b_u,
+        c_u,
+        power,
+        &u_name,
+    )?;
+
+    let scale = const_factor / d;
+    let scaled = if scale.is_one() {
+        integral_u
+    } else {
+        Expr::Mul(Expr::Constant(scale).boxed(), integral_u.boxed())
+    };
+
+    let u_sub = linear_poly.to_expr(var);
+    let substituted = substitute(&scaled, &u_name, &u_sub);
+    Some(simplify_fully(substituted))
+}
+
+fn integrate_sqrt_quadratic_over_power(
+    expr: &Expr,
+    a: Rational,
+    b: Rational,
+    c: Rational,
+    power: usize,
+    var: &str,
+) -> Option<Expr> {
+    if power == 0 {
+        return None;
+    }
+
+    match power {
+        1 => {
+            if a.is_positive() {
+                return integrate_sqrt_quadratic_over_u_pos_leading(a, b, c, var);
+            }
+            if c.is_positive() {
+                return integrate_sqrt_quadratic_over_power(expr, a, b, c, 2, var);
+            }
+            None
+        }
+        2 => {
+            let v_name = fresh_symbol(expr, "__v");
+            let inner = integrate_sqrt_quadratic_over_power(expr, c, b, a, 1, &v_name)?;
+            let v_sub = Expr::Div(
+                Expr::Constant(Rational::one()).boxed(),
+                Expr::Variable(var.to_string()).boxed(),
+            );
+            let substituted = substitute(&inner, &v_name, &v_sub);
+            Some(simplify_fully(Expr::Neg(substituted.boxed())))
+        }
+        _ => {
+            let v_name = fresh_symbol(expr, "__v");
+            let mut base_coeffs = BTreeMap::new();
+            if !c.is_zero() {
+                base_coeffs.insert(2, c.clone());
+            }
+            if !b.is_zero() {
+                base_coeffs.insert(1, b.clone());
+            }
+            if !a.is_zero() {
+                base_coeffs.insert(0, a.clone());
+            }
+            let base_poly = Poly { coeffs: base_coeffs };
+            if base_poly.degree()? != 2 {
+                return None;
+            }
+
+            let mut p_coeffs = BTreeMap::new();
+            p_coeffs.insert(power - 3, Rational::one());
+            let p_poly = Poly { coeffs: p_coeffs };
+            let poly_total = p_poly * base_poly.clone();
+            let integral_v = integrate_poly_over_sqrt_quadratic(&poly_total, &base_poly, &v_name)?;
+            let v_sub = Expr::Div(
+                Expr::Constant(Rational::one()).boxed(),
+                Expr::Variable(var.to_string()).boxed(),
+            );
+            let substituted = substitute(&integral_v, &v_name, &v_sub);
+            Some(simplify_fully(Expr::Neg(substituted.boxed())))
+        }
+    }
+}
+
+fn integrate_sqrt_quadratic_over_u_pos_leading(
+    a: Rational,
+    b: Rational,
+    c: Rational,
+    var: &str,
+) -> Option<Expr> {
+    if !a.is_positive() {
+        return None;
+    }
+    let two = Rational::from_integer(2.into());
+    let four = Rational::from_integer(4.into());
+    let half = Rational::from_integer(1.into()) / Rational::from_integer(2.into());
+    let h = b.clone() / (two.clone() * a.clone());
+    let d = (four.clone() * a.clone() * c.clone() - b.clone() * b.clone())
+        / (four * a.clone() * a.clone());
+    let k = c.clone() / a.clone();
+
+    let u_expr = Expr::Variable(var.to_string());
+    let v_expr = Expr::Add(u_expr.clone().boxed(), Expr::Constant(h.clone()).boxed());
+    let v_sq = Expr::Pow(v_expr.clone().boxed(), Expr::integer(2).boxed());
+    let radicand = if d.is_zero() {
+        v_sq
+    } else {
+        Expr::Add(v_sq.boxed(), Expr::Constant(d.clone()).boxed())
+    };
+    let s_expr = Expr::Pow(radicand.boxed(), Expr::Constant(half).boxed());
+    let log_term = log_abs(Expr::Add(v_expr.boxed(), s_expr.clone().boxed()));
+    let s_minus_u = Expr::Sub(s_expr.clone().boxed(), u_expr.clone().boxed());
+
+    let mut sum = s_expr;
+    if !h.is_zero() {
+        sum = Expr::Add(
+            sum.boxed(),
+            Expr::Mul(Expr::Constant(h).boxed(), log_term.boxed()).boxed(),
+        );
+    }
+
+    if !k.is_zero() {
+        let term_k = if k.is_positive() {
+            let sqrt_k = sqrt_rational_expr(&k);
+            let ratio = Expr::Div(
+                Expr::Sub(s_minus_u.clone().boxed(), sqrt_k.clone().boxed()).boxed(),
+                Expr::Add(s_minus_u.boxed(), sqrt_k.clone().boxed()).boxed(),
+            );
+            Expr::Mul(sqrt_k.boxed(), log_abs(ratio).boxed())
+        } else {
+            let k_neg = -k.clone();
+            let sqrt_k = sqrt_rational_expr(&k_neg);
+            let atan_arg = Expr::Div(s_minus_u.boxed(), sqrt_k.clone().boxed());
+            let coeff = Expr::Mul(
+                Expr::Constant(Rational::from_integer((-2).into())).boxed(),
+                sqrt_k.boxed(),
+            );
+            Expr::Mul(coeff.boxed(), Expr::Atan(atan_arg.boxed()).boxed())
+        };
+        sum = Expr::Add(sum.boxed(), term_k.boxed());
+    }
+    let sqrt_a = sqrt_rational_expr(&a);
+    Some(simplify_fully(Expr::Mul(sqrt_a.boxed(), sum.boxed())))
+}
+
+fn sqrt_rational_expr(value: &Rational) -> Expr {
+    Expr::Pow(
+        Expr::Constant(value.clone()).boxed(),
+        Expr::Constant(Rational::new(1.into(), 2.into())).boxed(),
+    )
 }
 
 fn integrate_quadratic_sqrt_substitution(
