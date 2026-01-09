@@ -1,10 +1,13 @@
 use crate::core::expr::{Expr, Rational};
 use crate::core::polynomial::Polynomial;
-use crate::simplify::{simplify, simplify_fully};
+use crate::simplify::simplify;
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
-use super::{coeff_of_var, contains_var, flatten_product, is_polynomial, rebuild_product};
+use super::{
+    apply_constant_factor, coeff_of_var, contains_var, flatten_product, is_polynomial, is_zero_expr,
+    rebuild_product, scale_by_coeff,
+};
 
 pub fn is_exp(expr: &Expr) -> bool {
     matches!(expr, Expr::Exp(_))
@@ -192,12 +195,12 @@ fn integrate_exp_trig_product(expr: &Expr, var: &str) -> Option<Expr> {
     let family = trig_kind.family();
     let target = trig_kind.target();
     let denom = exp_trig_denom(&a, &b, family);
-    if is_const_zero(&denom) {
+    if is_zero_expr(&denom) {
         if family == ExpTrigFamily::Hyperbolic {
             if let Some(result) =
                 integrate_exp_hyperbolic_decompose(&poly_expr, &exp_arg, &trig_arg, trig_kind, var)
             {
-                return Some(scale_by_const(result, const_expr));
+                return Some(apply_constant_factor(const_expr, result));
             }
         }
         return None;
@@ -216,7 +219,7 @@ fn integrate_exp_trig_product(expr: &Expr, var: &str) -> Option<Expr> {
         Expr::Exp(exp_arg.clone().boxed()).boxed(),
         combo.boxed(),
     ));
-    Some(scale_by_const(base, const_expr))
+    Some(apply_constant_factor(const_expr, base))
 }
 
 fn exp_trig_denom(a: &Expr, b: &Expr, family: ExpTrigFamily) -> Expr {
@@ -410,46 +413,6 @@ fn polynomial_expr_from_coeffs(coeffs: &[Expr], var: &str) -> Expr {
             .into_iter()
             .reduce(|a, b| Expr::Add(a.boxed(), b.boxed()))
             .unwrap(),
-    }
-}
-
-fn is_const_one(expr: &Expr) -> bool {
-    matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_one())
-}
-
-fn is_const_zero(expr: &Expr) -> bool {
-    matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_zero())
-}
-
-fn invert_coeff(expr: Expr) -> Expr {
-    match expr {
-        Expr::Constant(c) => Expr::Constant(Rational::one() / c),
-        Expr::Neg(inner) => Expr::Neg(invert_coeff(*inner).boxed()),
-        Expr::Div(num, den) => Expr::Div(den, num),
-        Expr::Pow(base, exp) => match &*exp {
-            Expr::Constant(k) => Expr::Pow(base, Expr::Constant(-k.clone()).boxed()),
-            _ => Expr::Div(
-                Expr::Constant(Rational::one()).boxed(),
-                Expr::Pow(base, exp).boxed(),
-            ),
-        },
-        other => Expr::Div(Expr::Constant(Rational::one()).boxed(), other.boxed()),
-    }
-}
-
-fn scale_by_coeff(expr: Expr, coeff: Expr) -> Expr {
-    if is_const_one(&coeff) {
-        expr
-    } else {
-        simplify(Expr::Mul(expr.boxed(), invert_coeff(coeff).boxed()))
-    }
-}
-
-fn scale_by_const(expr: Expr, const_expr: Expr) -> Expr {
-    if is_const_one(&const_expr) {
-        expr
-    } else {
-        simplify(Expr::Mul(const_expr.boxed(), expr.boxed()))
     }
 }
 

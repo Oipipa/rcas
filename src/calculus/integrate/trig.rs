@@ -1,9 +1,12 @@
 use crate::core::expr::{Expr, Rational};
-use crate::simplify::{simplify, simplify_fully, substitute};
+use crate::simplify::{simplify, substitute};
 use num_traits::{One, ToPrimitive, Zero};
 use num_bigint::BigInt;
 
-use super::{coeff_of_var, contains_var, flatten_product, linear_parts, log_abs, rebuild_product};
+use super::{
+    coeff_of_var, contains_var, flatten_product, fresh_var_name, is_one_expr, is_zero_expr,
+    linear_parts, log_abs, rebuild_product, scale_by_coeff,
+};
 use super::rational;
 
 pub fn is_trig(expr: &Expr) -> bool {
@@ -222,19 +225,6 @@ fn update_trig_arg(slot: &mut Option<Expr>, arg: Expr) -> Option<()> {
         *slot = Some(arg);
     }
     Some(())
-}
-
-fn fresh_var_name(expr: &Expr, var: &str, base: &str) -> String {
-    if base != var && !contains_var(expr, base) {
-        return base.to_string();
-    }
-    for idx in 1..64 {
-        let candidate = format!("{base}{idx}");
-        if candidate != var && !contains_var(expr, &candidate) {
-            return candidate;
-        }
-    }
-    format!("{base}_sub")
 }
 
 fn normalize_arg(expr: &Expr) -> (Expr, bool) {
@@ -609,38 +599,6 @@ fn pow_to_i64(p: &Rational) -> Option<i64> {
     p.to_integer().to_i64()
 }
 
-fn is_const_one(expr: &Expr) -> bool {
-    matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_one())
-}
-
-fn is_const_zero(expr: &Expr) -> bool {
-    matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_zero())
-}
-
-fn invert_coeff(expr: Expr) -> Expr {
-    match expr {
-        Expr::Constant(c) => Expr::Constant(Rational::one() / c),
-        Expr::Neg(inner) => Expr::Neg(invert_coeff(*inner).boxed()),
-        Expr::Div(num, den) => Expr::Div(den, num),
-        Expr::Pow(base, exp) => match &*exp {
-            Expr::Constant(k) => Expr::Pow(base, Expr::Constant(-k.clone()).boxed()),
-            _ => Expr::Div(
-                Expr::Constant(Rational::one()).boxed(),
-                Expr::Pow(base, exp).boxed(),
-            ),
-        },
-        other => Expr::Div(Expr::Constant(Rational::one()).boxed(), other.boxed()),
-    }
-}
-
-fn scale_by_coeff(expr: Expr, k: Expr) -> Expr {
-    if is_const_one(&k) {
-        expr
-    } else {
-        simplify(Expr::Mul(expr.boxed(), invert_coeff(k).boxed()))
-    }
-}
-
 fn integrate_sin_power(inner: &Expr, power: &Rational, var: &str) -> Option<Expr> {
     let n = pow_to_i64(power)?;
     let k = coeff_of_var(inner, var)?;
@@ -952,7 +910,7 @@ fn integrate_sin_cos_product(expr: &Expr, var: &str) -> Option<Expr> {
     let k = coeff_of_var(&inner, var)?;
     let combined = integrate_sin_cos_powers(sin_exp, cos_exp, &inner, k)?;
     let scaled = simplify(combined);
-    if is_const_one(&const_expr) {
+    if is_one_expr(&const_expr) {
         Some(scaled)
     } else {
         Some(simplify(Expr::Mul(const_expr.boxed(), scaled.boxed())))
@@ -1024,7 +982,7 @@ fn integrate_tan_sec_product(expr: &Expr, var: &str) -> Option<Expr> {
     let k = coeff_of_var(&inner, var)?;
     let combined = integrate_tan_sec_powers(tan_exp, sec_exp, &inner, k)?;
     let scaled = simplify(combined);
-    if is_const_one(&const_expr) {
+    if is_one_expr(&const_expr) {
         Some(scaled)
     } else {
         Some(simplify(Expr::Mul(const_expr.boxed(), scaled.boxed())))
@@ -1186,7 +1144,7 @@ fn integrate_cot_csc_product(expr: &Expr, var: &str) -> Option<Expr> {
     let k = coeff_of_var(&inner, var)?;
     let combined = integrate_cot_csc_powers(cot_exp, csc_exp, &inner, k)?;
     let scaled = simplify(combined);
-    if is_const_one(&const_expr) {
+    if is_one_expr(&const_expr) {
         Some(scaled)
     } else {
         Some(simplify(Expr::Mul(const_expr.boxed(), scaled.boxed())))
@@ -1369,7 +1327,7 @@ fn integrate_mixed_trig_product(expr: &Expr, var: &str) -> Option<Expr> {
         _ => return None,
     };
 
-    if is_const_one(&const_expr) {
+    if is_one_expr(&const_expr) {
         Some(simplify(combined))
     } else {
         Some(simplify(Expr::Mul(const_expr.boxed(), combined.boxed())))
@@ -1564,7 +1522,7 @@ fn integrate_with_sin_substitution(
 
 fn integrate_arcsin(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1585,7 +1543,7 @@ fn integrate_arcsin(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_arccos(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1606,7 +1564,7 @@ fn integrate_arccos(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_arctan(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1630,7 +1588,7 @@ fn integrate_arctan(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_arcsec(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1653,7 +1611,7 @@ fn integrate_arcsec(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_arccsc(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1676,7 +1634,7 @@ fn integrate_arccsc(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_arccot(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1701,7 +1659,7 @@ fn integrate_arccot(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_asinh(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1723,7 +1681,7 @@ fn integrate_asinh(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_acosh(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(
@@ -1745,7 +1703,7 @@ fn integrate_acosh(arg: &Expr, var: &str) -> Option<Expr> {
 
 fn integrate_atanh(arg: &Expr, var: &str) -> Option<Expr> {
     let (k, c) = linear_parts(arg, var)?;
-    if is_const_zero(&k) {
+    if is_zero_expr(&k) {
         return None;
     }
     let inner = simplify(Expr::Add(

@@ -152,6 +152,22 @@ pub(super) fn as_rational_expr(expr: &Expr) -> (Expr, Expr) {
         );
     }
 
+    let (num_factors, den_factors) = split_negative_powers(factors);
+
+    let numerator = rebuild_product(const_factor, num_factors);
+    let denominator = if den_factors.is_empty() {
+        Expr::Constant(Rational::one())
+    } else {
+        rebuild_product(Rational::one(), den_factors)
+    };
+
+    (numerator, denominator)
+}
+
+fn split_negative_powers<I>(factors: I) -> (Vec<Expr>, Vec<Expr>)
+where
+    I: IntoIterator<Item = Expr>,
+{
     let mut num_factors = Vec::new();
     let mut den_factors = Vec::new();
 
@@ -180,14 +196,7 @@ pub(super) fn as_rational_expr(expr: &Expr) -> (Expr, Expr) {
         }
     }
 
-    let numerator = rebuild_product(const_factor, num_factors);
-    let denominator = if den_factors.is_empty() {
-        Expr::Constant(Rational::one())
-    } else {
-        rebuild_product(Rational::one(), den_factors)
-    };
-
-    (numerator, denominator)
+    (num_factors, den_factors)
 }
 
 pub(crate) fn log_abs(expr: Expr) -> Expr {
@@ -348,6 +357,30 @@ pub(crate) fn apply_constant_factor(const_factor: Expr, expr: Expr) -> Expr {
     }
 }
 
+pub(crate) fn scale_by_coeff(expr: Expr, coeff: Expr) -> Expr {
+    if is_one_expr(&coeff) {
+        expr
+    } else {
+        simplify(Expr::Mul(expr.boxed(), invert_coeff(coeff).boxed()))
+    }
+}
+
+fn invert_coeff(expr: Expr) -> Expr {
+    match expr {
+        Expr::Constant(c) => Expr::Constant(Rational::one() / c),
+        Expr::Neg(inner) => Expr::Neg(invert_coeff(*inner).boxed()),
+        Expr::Div(num, den) => Expr::Div(den, num),
+        Expr::Pow(base, exp) => match &*exp {
+            Expr::Constant(k) => Expr::Pow(base, Expr::Constant(-k.clone()).boxed()),
+            _ => Expr::Div(
+                Expr::Constant(Rational::one()).boxed(),
+                Expr::Pow(base, exp).boxed(),
+            ),
+        },
+        other => Expr::Div(Expr::Constant(Rational::one()).boxed(), other.boxed()),
+    }
+}
+
 pub(super) fn is_zero_expr(expr: &Expr) -> bool {
     matches!(simplify_fully(expr.clone()), Expr::Constant(c) if c.is_zero())
 }
@@ -443,33 +476,7 @@ pub(super) fn distribute_product_with_addition(
 }
 
 pub(crate) fn to_rational_candidate(constant: Rational, factors: &[Expr]) -> Option<Expr> {
-    let mut num_factors = Vec::new();
-    let mut den_factors = Vec::new();
-
-    for f in factors {
-        match f {
-            Expr::Pow(base, exp) => match &**exp {
-                Expr::Constant(k) if k < &Rational::zero() => {
-                    den_factors.push(Expr::Pow(
-                        base.clone().boxed(),
-                        Expr::Constant(-k.clone()).boxed(),
-                    ));
-                }
-                Expr::Neg(inner) => {
-                    if let Expr::Constant(k) = &**inner {
-                        den_factors.push(Expr::Pow(
-                            base.clone().boxed(),
-                            Expr::Constant(k.clone()).boxed(),
-                        ));
-                    } else {
-                        num_factors.push(f.clone());
-                    }
-                }
-                _ => num_factors.push(f.clone()),
-            },
-            _ => num_factors.push(f.clone()),
-        }
-    }
+    let (num_factors, den_factors) = split_negative_powers(factors.iter().cloned());
 
     if den_factors.is_empty() {
         return None;
@@ -560,6 +567,19 @@ pub(crate) fn contains_var(expr: &Expr, var: &str) -> bool {
         | Expr::Abs(inner) => contains_var(inner, var),
         Expr::Constant(_) => false,
     }
+}
+
+pub(crate) fn fresh_var_name(expr: &Expr, var: &str, base: &str) -> String {
+    if base != var && !contains_var(expr, base) {
+        return base.to_string();
+    }
+    for idx in 1..64 {
+        let candidate = format!("{base}{idx}");
+        if candidate != var && !contains_var(expr, &candidate) {
+            return candidate;
+        }
+    }
+    format!("{base}_sub")
 }
 
 fn is_zero_constant(expr: &Expr) -> bool {

@@ -11,9 +11,9 @@ use crate::simplify::{normalize, simplify, simplify_fully, substitute};
 use super::limits::{SUBSTITUTION_CANDIDATE_LIMIT, TRANSFORM_SIZE_LIMIT};
 use super::{
     direct::integrate_basic,
-    apply_constant_factor, constant_ratio, contains_var, expr_size, flatten_product, integrate,
-    is_constant_wrt, is_zero_expr, log_abs, rebuild_product, split_constant_factors,
-    IntegrationResult,
+    apply_constant_factor, constant_ratio, contains_var, expr_size, flatten_product,
+    fresh_var_name, integrate, is_constant_wrt, is_zero_expr, log_abs, rebuild_product,
+    split_constant_factors, IntegrationResult,
 };
 
 pub(super) fn integrate_by_substitution(expr: &Expr, var: &str) -> Option<Expr> {
@@ -1029,19 +1029,6 @@ fn replace_expr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
         Expr::Abs(inner) => Expr::Abs(replace_expr(inner, target, replacement).boxed()),
         Expr::Variable(_) | Expr::Constant(_) => expr.clone(),
     }
-}
-
-fn fresh_var_name(expr: &Expr, var: &str, base: &str) -> String {
-    if base != var && !contains_var(expr, base) {
-        return base.to_string();
-    }
-    for idx in 1..64 {
-        let candidate = format!("{base}{idx}");
-        if candidate != var && !contains_var(expr, &candidate) {
-            return candidate;
-        }
-    }
-    format!("{base}_sub")
 }
 
 fn inner_candidate(expr: &Expr) -> Option<&Expr> {

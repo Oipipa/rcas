@@ -47,8 +47,8 @@ use utils::{
     distribute_product_with_addition, expr_size, is_constant_wrt, is_one_expr, is_zero_expr,
 };
 pub(crate) use utils::{
-    apply_constant_factor, constant_ratio, contains_var, flatten_product, log_abs, rebuild_product,
-    split_constant_factors, to_rational_candidate,
+    apply_constant_factor, constant_ratio, contains_var, flatten_product, fresh_var_name, log_abs,
+    rebuild_product, scale_by_coeff, split_constant_factors, to_rational_candidate,
 };
 
 pub fn integrate(var: &str, expr: &Expr) -> IntegrationResult {
