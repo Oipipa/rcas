@@ -429,6 +429,45 @@ fn assert_risch_roundtrip(input: &str, samples: &[f64]) {
     }
 }
 
+fn assert_risch_roundtrip_expr(expr: &Expr, samples: &[f64]) {
+    match integrate("x", expr) {
+        IntegrationResult::Integrated { result, report } => {
+            let attempt = report
+                .attempts
+                .iter()
+                .find(|a| a.strategy == Strategy::Risch)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "risch attempt missing for expr={expr:?}: attempts={:?}",
+                        report.attempts
+                    )
+                });
+            assert!(
+                matches!(attempt.status, AttemptStatus::Succeeded),
+                "risch should succeed for expr={expr:?}"
+            );
+            let derivative = simplify_fully(differentiate("x", &result));
+            let target = simplify_fully(expr.clone());
+            for &sample in samples {
+                let lhs = eval_expr_f64(&derivative, "x", sample);
+                let rhs = eval_expr_f64(&target, "x", sample);
+                let delta = (lhs - rhs).abs();
+                assert!(
+                    delta < 1e-6,
+                    "risch roundtrip failure for expr={expr:?} at x={sample}: {delta}"
+                );
+            }
+        }
+        other => panic!("expected risch integration for expr={expr:?}, got {other:?}"),
+    }
+}
+
+fn assert_risch_roundtrip_from_antiderivative(antiderivative: &str, samples: &[f64]) {
+    let expr = parse_expr(antiderivative).expect("parse antiderivative");
+    let integrand = simplify_fully(differentiate("x", &expr));
+    assert_risch_roundtrip_expr(&integrand, samples);
+}
+
 fn assert_integral_with_var(var: &str, input: &str, expected: &str) {
     let expr = parse_expr(input).expect("parse expected integral input");
     let expected_expr = simplify_parse(expected);
@@ -1690,6 +1729,29 @@ fn risch_exp_log_tower_suite() {
 }
 
 #[test]
+fn risch_exp_log_extension_ode_suite() {
+    let samples = vec![1.1, 1.4, 1.8, 2.3];
+    let cases = vec![
+        "exp(x) * (log(x) + 1/x)",
+        "exp(x) * (log(x)^2 + 2*log(x)/x)",
+        "exp(x) * (log(x)^3 + 3*log(x)^2/x)",
+        "exp(2*x) * (2*log(x) + 1/x)",
+        "exp(2*x) * (2*log(x)^2 + 2*log(x)/x)",
+        "exp(3*x) * (3*log(x) + 1/x)",
+        "exp(x) * (log(2*x+1) + 2/(2*x+1))",
+        "exp(x) * (log(2*x+1)^2 + 4*log(2*x+1)/(2*x+1))",
+        "exp(2*x) * (2*log(2*x+1) + 2/(2*x+1))",
+        "exp(x) * (log(3*x-2) + 3/(3*x-2))",
+        "exp(x) * (log(3*x-2)^2 + 6*log(3*x-2)/(3*x-2))",
+    ];
+
+    assert_eq!(cases.len(), 11, "expected 11 exp/log ODE cases");
+    for input in cases {
+        assert_numeric_roundtrip(input, &samples);
+    }
+}
+
+#[test]
 fn risch_algebraic_substitution_suite() {
     let samples = vec![0.2, 0.6, 1.1, 1.7];
     let cases = vec!["1/(x^(1/3) + 1)"];
@@ -1697,6 +1759,30 @@ fn risch_algebraic_substitution_suite() {
     assert_eq!(cases.len(), 1, "expected 1 algebraic substitution case");
     for input in cases {
         assert_risch_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn risch_algebraic_root_rational_suite() {
+    let samples = vec![0.2, 0.6, 1.1, 1.7];
+    let cases = vec![
+        "x/(x^2 + 1)^(1/3)",
+        "x/(x^2 + 2)^(1/3)",
+        "x/(2*x^2 + 1)^(1/3)",
+        "(x+1)/(x^2 + 1)^(1/3)",
+        "(2*x+1)/(x^2 + 3)^(1/3)",
+        "x/(x^2 + x + 1)^(1/3)",
+        "x/(x^2 + 1)^(1/4)",
+        "x/(x^2 + 2)^(1/4)",
+        "x/(3*x^2 + 1)^(1/4)",
+        "x/(x^2 + 1)^(1/5)",
+        "x/(2*x^2 + 3)^(1/5)",
+        "(x+2)/(x^2 + 2)^(1/5)",
+    ];
+
+    assert_eq!(cases.len(), 12, "expected 12 algebraic rational cases");
+    for input in cases {
+        assert_risch_roundtrip_from_antiderivative(input, &samples);
     }
 }
 
@@ -2098,6 +2184,29 @@ fn risch_lite_exp_generator_unification() {
     let samples = vec![0.2, 0.6, 1.1, 1.7];
     let cases = vec!["1/(1+exp(x)*exp(2*x))"];
     assert_eq!(cases.len(), 1, "expected 1 exp unification case");
+    for input in cases {
+        assert_risch_lite_roundtrip(input, &samples);
+    }
+}
+
+#[test]
+fn risch_lite_multi_generator_rational_suite() {
+    let samples = vec![1.1, 1.7, 2.3, 3.1];
+    let cases = vec![
+        "1/(1+exp(x)) + (log(x) + 1)/x",
+        "(exp(x)+2)/(exp(x)+1) + (log(x)^2 + log(x))/x",
+        "exp(x)^2/(1+exp(x)) + (log(x)^2 + 2*log(x) + 1)/x",
+        "exp(x)^3/(1+exp(x)) + (log(x)^3 + log(x))/x",
+        "1/(2+exp(x)) + 2*(log(2*x+1)+1)/(2*x+1)",
+        "1/(3+exp(x)) + 3*(log(3*x-2)+2)/(3*x-2)",
+        "(exp(x)+1)/(exp(x)+2) + (log(4*x+1)^2 + log(4*x+1) + 1) * 4/(4*x+1)",
+        "exp(x)^2/(1+exp(x)) + 2*(log(2*x+1)+1)/(2*x+1) + (log(x)^2 + 5)/x",
+        "(log(x) + 1)/x + 2*(log(2*x+1)+1)/(2*x+1)",
+        "2*(log(2*x+1)+1)/(2*x+1) + 3*(log(3*x-2)+2)/(3*x-2)",
+        "(log(x)^4 + log(x)^2)/x + 1/(1+exp(x))",
+        "(log(x)^2 + 5)/x + (log(3*x-2)^2 + log(3*x-2) + 1) * 3/(3*x-2)",
+    ];
+    assert_eq!(cases.len(), 12, "expected 12 multi-generator cases");
     for input in cases {
         assert_risch_lite_roundtrip(input, &samples);
     }

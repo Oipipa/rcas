@@ -121,15 +121,16 @@ fn detect_non_elementary_uncached(expr: &Expr, var: &str) -> Option<NonElementar
 fn fast_non_elementary(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
     match expr {
         Expr::Exp(arg) => {
-            if let Some(deg) = polynomial_degree(arg, var) {
-                if deg > 1 {
-                    return Some(NonElementaryKind::ExpOfPolynomial);
-                }
+            if polynomial_degree_gt(arg, var, 1) {
+                return Some(NonElementaryKind::ExpOfPolynomial);
             }
         }
         Expr::Pow(base, exp) => {
             if is_pow_self(base, exp, var) {
                 return Some(NonElementaryKind::PowerSelf);
+            }
+            if is_half_integer_exp(exp) && polynomial_degree_gt(base, var, 2) {
+                return Some(NonElementaryKind::SpecialFunctionNeeded);
             }
         }
         Expr::Div(num, den) => {
@@ -173,7 +174,7 @@ fn is_special_function_radical(factor: &Expr, factors: &[Expr], var: &str) -> bo
         });
         return !has_odd_poly;
     }
-    true
+    false
 }
 
 fn is_radical_pow(factor: &Expr) -> bool {
@@ -190,26 +191,13 @@ fn is_radical_pow(factor: &Expr) -> bool {
 fn detect_non_elementary_core(expr: &Expr, var: &str) -> Option<NonElementaryKind> {
     match expr {
         Expr::Exp(arg) => {
-            if let Some(deg) = polynomial_degree(arg, var) {
-                if deg > 1 {
-                    return Some(NonElementaryKind::ExpOfPolynomial);
-                }
+            if polynomial_degree_gt(arg, var, 1) {
+                return Some(NonElementaryKind::ExpOfPolynomial);
             }
         }
         Expr::Pow(base, exp) => {
             if is_pow_self(base, exp, var) {
                 return Some(NonElementaryKind::PowerSelf);
-            }
-            if let Expr::Constant(k) = &**exp {
-                if !k.is_integer() {
-                    if let Some(deg) = polynomial_degree(base, var) {
-                        if deg >= 2 {
-                            if k.denom() != &BigInt::from(2) || deg > 2 {
-                                return Some(NonElementaryKind::SpecialFunctionNeeded);
-                            }
-                        }
-                    }
-                }
             }
         }
         Expr::Div(num, den) => {
@@ -286,6 +274,17 @@ fn is_log_var(expr: &Expr, var: &str) -> bool {
         },
         _ => false,
     }
+}
+
+fn polynomial_degree_gt(expr: &Expr, var: &str, threshold: usize) -> bool {
+    matches!(polynomial_degree(expr, var), Some(deg) if deg > threshold)
+}
+
+fn is_half_integer_exp(exp: &Expr) -> bool {
+    matches!(
+        exp,
+        Expr::Constant(k) if !k.is_integer() && k.denom() == &BigInt::from(2)
+    )
 }
 
 fn polynomial_degree(expr: &Expr, var: &str) -> Option<usize> {

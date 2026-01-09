@@ -4,7 +4,7 @@ use num_bigint::BigInt;
 use num_traits::{One, Zero};
 
 use crate::calculus::integrate::{contains_var, log_abs, polynomial, rational};
-use crate::calculus::risch::diff_field::{AlgebraicExtension, ExtensionKind, Tower};
+use crate::calculus::risch::diff_field::{AlgebraicExtension, ExtensionKind, FieldElement, Tower};
 use crate::core::expr::{Expr, Rational};
 use crate::simplify::simplify_fully;
 
@@ -120,6 +120,12 @@ fn integrate_algebraic_extension(expr_sym: &Expr, var: &str, tower: &Tower) -> R
             };
         }
     }
+
+    let algebraic_rational = integrate_algebraic_rational(expr_sym, var, tower);
+    if !matches!(algebraic_rational, RischStep::Indeterminate { .. }) {
+        return algebraic_rational;
+    }
+
     let expanded = tower.expand_symbols(expr_sym);
     if let Some(outcome) = analyze_algebraic(&expanded, var) {
         return match outcome {
@@ -473,6 +479,153 @@ fn integrate_log_rational(expr_sym: &Expr, var: &str, tower: &Tower) -> RischSte
         result: sum_exprs(pieces),
         note: "risch log hermite reduction".to_string(),
     }
+}
+
+fn integrate_algebraic_rational(expr_sym: &Expr, var: &str, tower: &Tower) -> RischStep {
+    if let Some(result) = integrate_algebraic_rational_part(expr_sym, var, tower) {
+        return RischStep::Integrated {
+            result,
+            note: "risch algebraic rational solution".to_string(),
+        };
+    }
+
+    let t_symbol = tower.top_symbol();
+    let Some((mut numer, mut denom)) = expr_to_rational_polys(expr_sym, t_symbol) else {
+        return RischStep::Indeterminate {
+            note: "algebraic rational conversion failed".to_string(),
+        };
+    };
+    if expr_poly_is_zero(&denom) {
+        return RischStep::Indeterminate {
+            note: "algebraic rational denominator zero".to_string(),
+        };
+    }
+
+    if let Some(gcd) = expr_poly_gcd(&numer, &denom) {
+        if !expr_poly_is_one(&gcd) {
+            if let Some(new_numer) = expr_poly_div_exact(&numer, &gcd) {
+                if let Some(new_denom) = expr_poly_div_exact(&denom, &gcd) {
+                    numer = new_numer;
+                    denom = new_denom;
+                }
+            }
+        }
+    }
+
+    let denom_lc = simplify_fully(denom.leading_coeff());
+    if !denom_lc.is_one() && !denom_lc.is_zero() {
+        let scale = Expr::Div(
+            Expr::Constant(Rational::one()).boxed(),
+            denom_lc.boxed(),
+        );
+        numer = simplify_expr_poly(numer.scale(&scale));
+        denom = simplify_expr_poly(denom.scale(&scale));
+    }
+
+    if denom.degree().unwrap_or(0) == 0 {
+        let denom_const = simplify_fully(denom.coeff(0));
+        if denom_const.is_zero() {
+            return RischStep::Indeterminate {
+                note: "algebraic rational zero denominator".to_string(),
+            };
+        }
+        let scale = Expr::Div(
+            Expr::Constant(Rational::one()).boxed(),
+            denom_const.boxed(),
+        );
+        numer = simplify_expr_poly(numer.scale(&scale));
+        denom = ExprPoly::one();
+    }
+
+    let Some((quotient, remainder)) = expr_poly_div_rem(&numer, &denom) else {
+        return RischStep::Indeterminate {
+            note: "algebraic polynomial division failed".to_string(),
+        };
+    };
+
+    let mut pieces = Vec::new();
+    if !expr_poly_is_zero(&quotient) {
+        let Some(poly_int) = integrate_algebraic_polynomial(&quotient, var, tower) else {
+            return RischStep::NonElementary {
+                note: "algebraic polynomial integration failed".to_string(),
+            };
+        };
+        pieces.push(poly_int);
+    }
+
+    if expr_poly_is_zero(&remainder) {
+        return RischStep::Integrated {
+            result: sum_exprs(pieces),
+            note: "risch algebraic polynomial reduction".to_string(),
+        };
+    }
+
+    let Some((mut hermite_terms, reduced_terms)) =
+        hermite_reduce_expr(&remainder, &denom, t_symbol)
+    else {
+        return RischStep::Indeterminate {
+            note: "algebraic hermite reduction failed".to_string(),
+        };
+    };
+    pieces.append(&mut hermite_terms);
+
+    for (mut num_term, mut den_term) in reduced_terms {
+        if expr_poly_is_zero(&num_term) {
+            continue;
+        }
+        let den_lc = simplify_fully(den_term.leading_coeff());
+        if !den_lc.is_one() && !den_lc.is_zero() {
+            let scale = Expr::Div(
+                Expr::Constant(Rational::one()).boxed(),
+                den_lc.boxed(),
+            );
+            num_term = simplify_expr_poly(num_term.scale(&scale));
+            den_term = simplify_expr_poly(den_term.scale(&scale));
+        }
+        let degree = den_term.degree().unwrap_or(0);
+        if degree == 0 {
+            let num_expr = expr_poly_to_expr(&num_term, t_symbol);
+            let Some(term) = integrate_algebraic_rational_part(&num_expr, var, tower) else {
+                return RischStep::NonElementary {
+                    note: "algebraic reduced base integration failed".to_string(),
+                };
+            };
+            pieces.push(term);
+            continue;
+        }
+
+        let num_expr = expr_poly_to_expr(&num_term, t_symbol);
+        let den_expr = expr_poly_to_expr(&den_term, t_symbol);
+        let Some(log_term) = integrate_log_term_if_constant(&num_expr, &den_expr, tower) else {
+            return RischStep::NonElementary {
+                note: "algebraic residue not constant".to_string(),
+            };
+        };
+        pieces.push(log_term);
+    }
+
+    RischStep::Integrated {
+        result: sum_exprs(pieces),
+        note: "risch algebraic hermite reduction".to_string(),
+    }
+}
+
+fn integrate_algebraic_polynomial(poly: &ExprPoly, var: &str, tower: &Tower) -> Option<Expr> {
+    if expr_poly_is_zero(poly) {
+        return Some(Expr::Constant(Rational::zero()));
+    }
+    let t_symbol = tower.top_symbol();
+    let expr = expr_poly_to_expr(poly, t_symbol);
+    integrate_algebraic_rational_part(&expr, var, tower)
+}
+
+fn integrate_algebraic_rational_part(expr: &Expr, var: &str, tower: &Tower) -> Option<Expr> {
+    let reduced = FieldElement::try_from_expr(expr, tower).ok()?.to_expr();
+    let t_symbol = tower.top_symbol();
+    let poly = ExprPoly::from_expr(&reduced, t_symbol)?;
+    let a_expr = exp_derivative_coeff(&tower.top_derivative_expr(), t_symbol)?;
+    let base_tower = tower_prefix(tower, tower.extensions().len().saturating_sub(1))?;
+    integrate_exp_polynomial(&poly, t_symbol, var, &base_tower, &a_expr)
 }
 
 fn integrate_exp_polynomial(

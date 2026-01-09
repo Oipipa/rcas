@@ -33,10 +33,7 @@ pub(super) fn analyze_algebraic(expr: &Expr, var: &str) -> Option<RischOutcome> 
                 note: "algebraic even-base reduction".to_string(),
             });
         }
-        return Some(RischOutcome::NonElementary {
-            kind: crate::calculus::integrate::NonElementaryKind::SpecialFunctionNeeded,
-            note: "algebraic sqrt degree > 2".to_string(),
-        });
+        return None;
     }
 
     if degree == 2 {
@@ -643,19 +640,19 @@ fn collect_sqrt_bases(
 ) {
     match expr {
         Expr::Pow(inner, exp) => {
-            if let Expr::Constant(k) = &**exp {
-                if is_half_integer(k) && contains_var(inner, var) {
-                    let candidate = simplify_fully((**inner).clone());
-                    match base {
-                        None => {
-                            *base = Some(candidate);
-                            *state = SqrtBaseDetection::Found;
-                        }
-                        Some(existing) if *existing != candidate => {
-                            *state = SqrtBaseDetection::Conflict;
-                        }
-                        _ => {}
+            if matches!(&**exp, Expr::Constant(k) if is_half_integer(k))
+                && contains_var(inner, var)
+            {
+                let candidate = simplify_fully((**inner).clone());
+                match base {
+                    None => {
+                        *base = Some(candidate);
+                        *state = SqrtBaseDetection::Found;
                     }
+                    Some(existing) if *existing != candidate => {
+                        *state = SqrtBaseDetection::Conflict;
+                    }
+                    _ => {}
                 }
             }
             collect_sqrt_bases(inner, var, state, base);

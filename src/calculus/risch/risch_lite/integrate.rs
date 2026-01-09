@@ -2,8 +2,8 @@ use num_traits::{One, Zero};
 
 use crate::calculus::differentiate;
 use crate::calculus::integrate::{
-    apply_constant_factor, constant_ratio, contains_var, flatten_product, polynomial, rational,
-    rebuild_product, split_constant_factors, to_rational_candidate,
+    apply_constant_factor, constant_ratio, contains_var, flatten_product, log_abs, polynomial,
+    rational, rebuild_product, split_constant_factors, to_rational_candidate,
 };
 use crate::core::expr::{Expr, Rational};
 use crate::simplify::{simplify, simplify_fully};
@@ -47,6 +47,43 @@ pub(super) fn log_derivative(expr: &Expr, var: &str) -> Option<(Expr, Expr)> {
 }
 
 pub(super) fn integrate_in_tower(expr: &Expr, var: &str, tower: &Tower) -> Option<(Expr, String)> {
+    if let Some(result) = integrate_term(expr, var, tower) {
+        return Some(result);
+    }
+
+    let terms = flatten_sum_terms(expr);
+    if terms.len() <= 1 {
+        return None;
+    }
+
+    let mut results = Vec::with_capacity(terms.len());
+    for term in terms {
+        let Some((result, _)) = integrate_term(&term, var, tower) else {
+            return None;
+        };
+        results.push(result);
+    }
+
+    Some((
+        simplify(rebuild_sum(results)),
+        "tower substitution sum".to_string(),
+    ))
+}
+
+fn integrate_term(expr: &Expr, var: &str, tower: &Tower) -> Option<(Expr, String)> {
+    if let Some((coeff, arg)) = log_derivative(expr, var) {
+        let result = simplify(Expr::Mul(coeff.boxed(), log_abs(arg).boxed()));
+        return Some((result, "logarithmic derivative".to_string()));
+    }
+
+    integrate_in_tower_single(expr, var, tower)
+}
+
+fn integrate_in_tower_single(
+    expr: &Expr,
+    var: &str,
+    tower: &Tower,
+) -> Option<(Expr, String)> {
     for (idx, generator) in tower.generators.iter().enumerate().rev() {
         if !contains_subexpr(expr, &generator.expr) {
             continue;

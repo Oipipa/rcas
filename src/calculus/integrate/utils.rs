@@ -211,14 +211,14 @@ pub(crate) fn flatten_product(expr: &Expr) -> (Rational, Vec<Expr>) {
             let (ca, mut fa) = flatten_product(a);
             let (cb, fb) = flatten_product(b);
             for factor in fb {
-                if let Expr::Pow(base, exp) = &factor {
-                    if let Expr::Constant(k) = &**exp {
-                        fa.push(Expr::Pow(
-                            base.clone(),
-                            Expr::Constant(-k.clone()).boxed(),
-                        ));
-                        continue;
-                    }
+                if let Expr::Pow(base, exp) = &factor
+                    && let Expr::Constant(k) = &**exp
+                {
+                    fa.push(Expr::Pow(
+                        base.clone(),
+                        Expr::Constant(-k.clone()).boxed(),
+                    ));
+                    continue;
                 }
                 fa.push(Expr::Pow(
                     factor.boxed(),

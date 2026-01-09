@@ -1,7 +1,7 @@
 use rcas::prelude::diff;
 
 fn main() {
-    let expr = "sin(x)*exp(x)";
+    let expr = "sin(exp(x^3))*exp(x)";
     let var = "x";
 
     match diff(expr, var) {

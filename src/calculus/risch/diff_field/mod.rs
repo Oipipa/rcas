@@ -11,4 +11,5 @@ mod utils;
 type ExprPoly = Polynomial<Expr>;
 
 pub use field::FieldElement;
+pub(crate) use derive::poly_derivative;
 pub use tower::{AlgebraicExtension, Extension, ExtensionKind, Tower};

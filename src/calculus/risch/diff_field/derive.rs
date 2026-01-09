@@ -11,7 +11,7 @@ use super::tower::Tower;
 use super::utils::{expr_depends_on, extract_integer};
 use super::ExprPoly;
 
-pub(super) fn poly_derivative(poly: &ExprPoly, tower: &Tower) -> Result<ExprPoly> {
+pub(crate) fn poly_derivative(poly: &ExprPoly, tower: &Tower) -> Result<ExprPoly> {
     let top = tower.top_symbol();
     let t_deriv_expr = tower.top_derivative_expr();
     let t_deriv_poly = ExprPoly::from_expr(&t_deriv_expr, top).ok_or_else(|| {
