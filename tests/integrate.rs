@@ -335,6 +335,32 @@ fn assert_numeric_roundtrip(input: &str, samples: &[f64]) {
     }
 }
 
+fn assert_direct_roundtrip(input: &str, samples: &[f64]) {
+    let expr = parse_expr(input).expect("parse direct roundtrip input");
+    match integrate("x", &expr) {
+        IntegrationResult::Integrated { result, report } => {
+            assert!(
+                report.attempts.iter().any(|a| {
+                    a.strategy == Strategy::Direct && a.status == AttemptStatus::Succeeded
+                }),
+                "direct strategy should succeed for {input}"
+            );
+            let derivative = simplify_fully(differentiate("x", &result));
+            let target = simplify_fully(expr);
+            for &sample in samples {
+                let lhs = eval_expr_f64(&derivative, "x", sample);
+                let rhs = eval_expr_f64(&target, "x", sample);
+                let delta = (lhs - rhs).abs();
+                assert!(
+                    delta < 1e-6,
+                    "roundtrip failure for {input} at x={sample}: {delta}"
+                );
+            }
+        }
+        other => panic!("expected integration for {input}, got {other:?}"),
+    }
+}
+
 fn assert_risch_lite_roundtrip(input: &str, samples: &[f64]) {
     let expr = parse_expr(input).expect("parse risch-lite roundtrip input");
     match integrate("x", &expr) {
@@ -806,6 +832,26 @@ fn substitution_and_parts_heuristics() {
             );
         }
         other => panic!("expected parts integration, got {other:?}"),
+    }
+}
+
+#[test]
+fn direct_handles_mixed_products() {
+    let cases = vec![
+        ("exp(x)*(x*sin(x)+cos(x))", vec![0.1, 0.5, 1.1]),
+        ("exp(2*x)*(x*cos(2*x)-sin(2*x))", vec![0.2, 0.6, 1.0]),
+        ("exp(-x)*(x*sin(3*x)+cos(3*x))", vec![0.1, 0.4, 0.9]),
+        ("exp(x)*(x*log(x)+log(x)+1)", vec![0.4, 1.0, 1.6]),
+        ("log(x)*sin(x) - cos(x)/x", vec![0.5, 1.0, 1.5]),
+        ("log(x)*cos(x) + sin(x)/x", vec![0.5, 1.0, 1.5]),
+        ("exp(x)*log(x) + exp(x)/x", vec![0.4, 1.0, 1.6]),
+        ("exp(2*x)*log(x) + exp(2*x)/(2*x)", vec![0.4, 1.0, 1.6]),
+        ("log(x)*sinh(x) + cosh(x)/x", vec![0.6, 1.0, 1.4]),
+        ("log(x)*cosh(x) + sinh(x)/x", vec![0.6, 1.0, 1.4]),
+    ];
+
+    for (input, samples) in cases {
+        assert_direct_roundtrip(input, &samples);
     }
 }
 

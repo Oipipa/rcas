@@ -11,8 +11,8 @@ use super::limits::{IBP_RECURSION_LIMIT, TABULAR_STEP_LIMIT, TRANSFORM_SIZE_LIMI
 use super::polynomial;
 use super::{
     combine_algebraic_factors, combine_var_powers, distribute_product_with_addition, expr_size,
-    integrate_basic, integrate_direct, is_one_expr, is_zero_expr, linear_parts, log_abs,
-    rebuild_product, split_constant_factors, to_rational_candidate,
+    flatten_product, integrate_basic, integrate_direct, is_one_expr, is_zero_expr, linear_parts,
+    log_abs, rebuild_product, split_constant_factors, to_rational_candidate,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -301,4 +301,123 @@ fn integrate_polynomial_times_log(poly: &Expr, log_arg: &Expr, var: &str) -> Opt
     let vdu = simplify(Expr::Mul(poly_integral.boxed(), ratio.boxed()));
     let vdu_integral = integrate_direct(&vdu, var)?;
     Some(simplify(Expr::Sub(log_term.boxed(), vdu_integral.boxed())))
+}
+
+fn is_log_var(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Log(inner) => match &**inner {
+            Expr::Variable(name) if name == var => true,
+            Expr::Abs(inner) => matches!(&**inner, Expr::Variable(name) if name == var),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn contains_log_var(expr: &Expr, var: &str) -> bool {
+    match expr {
+        Expr::Log(inner) => match &**inner {
+            Expr::Variable(name) if name == var => true,
+            Expr::Abs(inner) => matches!(&**inner, Expr::Variable(name) if name == var),
+            _ => false,
+        },
+        Expr::Add(a, b)
+        | Expr::Sub(a, b)
+        | Expr::Mul(a, b)
+        | Expr::Div(a, b)
+        | Expr::Pow(a, b) => contains_log_var(a, var) || contains_log_var(b, var),
+        Expr::Neg(inner)
+        | Expr::Sin(inner)
+        | Expr::Cos(inner)
+        | Expr::Tan(inner)
+        | Expr::Sec(inner)
+        | Expr::Csc(inner)
+        | Expr::Cot(inner)
+        | Expr::Atan(inner)
+        | Expr::Asin(inner)
+        | Expr::Acos(inner)
+        | Expr::Asec(inner)
+        | Expr::Acsc(inner)
+        | Expr::Acot(inner)
+        | Expr::Sinh(inner)
+        | Expr::Cosh(inner)
+        | Expr::Tanh(inner)
+        | Expr::Asinh(inner)
+        | Expr::Acosh(inner)
+        | Expr::Atanh(inner)
+        | Expr::Exp(inner)
+        | Expr::Abs(inner) => contains_log_var(inner, var),
+        Expr::Variable(_) | Expr::Constant(_) => false,
+    }
+}
+
+fn extract_log_linear_inner(expr: &Expr, var: &str) -> Option<(Option<Expr>, Expr)> {
+    match expr {
+        Expr::Add(a, b) => {
+            let (coeff_a, rem_a) = extract_log_linear_inner(a, var)?;
+            let (coeff_b, rem_b) = extract_log_linear_inner(b, var)?;
+            let coeff = match (coeff_a, coeff_b) {
+                (Some(ca), Some(cb)) => Some(simplify(Expr::Add(ca.boxed(), cb.boxed()))),
+                (Some(ca), None) => Some(ca),
+                (None, Some(cb)) => Some(cb),
+                (None, None) => None,
+            };
+            let remainder = simplify(Expr::Add(rem_a.boxed(), rem_b.boxed()));
+            Some((coeff, remainder))
+        }
+        Expr::Sub(a, b) => {
+            let (coeff_a, rem_a) = extract_log_linear_inner(a, var)?;
+            let (coeff_b, rem_b) = extract_log_linear_inner(b, var)?;
+            let coeff = match (coeff_a, coeff_b) {
+                (Some(ca), Some(cb)) => Some(simplify(Expr::Sub(ca.boxed(), cb.boxed()))),
+                (Some(ca), None) => Some(ca),
+                (None, Some(cb)) => Some(simplify(Expr::Neg(cb.boxed()))),
+                (None, None) => None,
+            };
+            let remainder = simplify(Expr::Sub(rem_a.boxed(), rem_b.boxed()));
+            Some((coeff, remainder))
+        }
+        Expr::Mul(_, _) => {
+            let (const_factor, factors) = flatten_product(expr);
+            let mut log_count = 0;
+            let mut others = Vec::new();
+            for factor in factors {
+                if is_log_var(&factor, var) {
+                    log_count += 1;
+                } else if contains_log_var(&factor, var) {
+                    return None;
+                } else {
+                    others.push(factor);
+                }
+            }
+            match log_count {
+                0 => Some((None, expr.clone())),
+                1 => {
+                    let coeff = rebuild_product(const_factor, others);
+                    Some((Some(coeff), Expr::Constant(Rational::zero())))
+                }
+                _ => None,
+            }
+        }
+        Expr::Log(_) if is_log_var(expr, var) => Some((
+            Some(Expr::Constant(Rational::one())),
+            Expr::Constant(Rational::zero()),
+        )),
+        _ => {
+            if contains_log_var(expr, var) {
+                None
+            } else {
+                Some((None, expr.clone()))
+            }
+        }
+    }
+}
+
+pub(super) fn extract_log_linear(expr: &Expr, var: &str) -> Option<(Expr, Expr)> {
+    let (coeff, remainder) = extract_log_linear_inner(expr, var)?;
+    let coeff = coeff?;
+    if is_zero_expr(&coeff) {
+        return None;
+    }
+    Some((coeff, remainder))
 }
